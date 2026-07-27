@@ -1,0 +1,29 @@
+# Build output
+target/
+dist/
+build/
+out/
+
+# Dependencies
+node_modules/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# Editor and operating-system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Logs and temporary files
+*.log
+tmp/
+temp/
+
+# Private Codex working-session records
+docs/session-history/
