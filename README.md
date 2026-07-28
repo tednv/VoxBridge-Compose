@@ -194,6 +194,9 @@ The launch argument takes priority for that session only.
 - User-facing rerun and cancellation controls
 - Editable raw-transcript and refined-text panes
 - Draft-and-apply saving for agent edits
+- Optional Faster Whisper/CTranslate2 speech-recognition backend with managed model
+  downloads, CUDA/CPU capability detection, safe utterance-boundary switching, and
+  the existing VoxBridge Vulkan backend retained as the broad-compatibility default
 - Bundled Space Grotesk typography
 - Removal of dormant legacy cloud and API code
 - Comment, naming, encoding, and unused-code cleanup

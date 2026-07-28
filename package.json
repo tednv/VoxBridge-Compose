@@ -20,19 +20,19 @@
     "tauri:build": "node scripts/tauri-runner.mjs build"
   },
   "dependencies": {
-    "@tabler/icons-preact": "^3.36.1",
+    "@tabler/icons-preact": "^3.45.0",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-autostart": "^2",
     "@tauri-apps/plugin-clipboard-manager": "^2.3.2",
     "@tauri-apps/plugin-dialog": "^2.7.2",
     "@tauri-apps/plugin-shell": "^2",
-    "preact": "^10.28.2"
+    "preact": "^10.29.7"
   },
   "devDependencies": {
-    "@preact/preset-vite": "^2.10.2",
+    "@preact/preset-vite": "^2.10.6",
     "@tauri-apps/cli": "^2.9.6",
-    "@types/node": "^22.15.3",
-    "typescript": "~5.9.3",
+    "@types/node": "^26.1.2",
+    "typescript": "~7.0.2",
     "vite": "^6.4.3"
   },
   "allowScripts": {

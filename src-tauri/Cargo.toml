@@ -33,7 +33,7 @@ arboard = "3.6.1"
 whisper-rs = { version = "0.16.0", features = ["vulkan"] }
 voxbridge = { path = "../voxbridge" }
 tokio-util = { version = "0.7", features = ["io"] }
-sha2 = "0.10"
+sha2 = "0.11"
 async-trait = "0.1"
 x11rb = { version = "0.13.2", features = ["xtest"] }
 tauri-plugin-clipboard-manager = "2.3.2"
@@ -46,7 +46,7 @@ tauri-plugin-autostart = "2"
 libc = "0.2"
 pulsectl-rs = "0.3"
 evdev = "0.13.2"
-ashpd = { version = "0.12.1", features = ["tokio"] }
+ashpd = { version = "0.13.13", features = ["tokio"] }
 zbus = "5.13.1"
 nix = "0.31.1"
 gtk = "0.18"
