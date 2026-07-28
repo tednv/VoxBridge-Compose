@@ -54,6 +54,20 @@ VoxBridge Compose is preparing for its first independent release. Windows is the
 primary tested platform. Linux support is retained, but release packages should be
 treated as pre-release until exercised on representative systems.
 
+## Roadmap
+
+- Whole-pipeline profiles
+- Drag-and-drop agent ordering
+- GitHub profile import and updates
+- Per-agent model and provider selection
+- User-facing rerun and cancellation controls
+- Editable raw-transcript and refined-text panes
+- Draft-and-apply saving for agent edits
+- Bundled Space Grotesk typography
+- Removal of dormant legacy cloud and API code
+- Comment, naming, encoding, and unused-code cleanup
+- Broader Linux package testing
+
 ## Build from source
 
 Clone recursively so the separate VoxBridge runtime and its native engine
