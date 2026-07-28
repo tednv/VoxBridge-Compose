@@ -1,0 +1,89 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-labelledby="title desc">
+  <title id="title">VoxBridge Compose workspace</title>
+  <desc id="desc">Sanitized product screenshot showing local speech recognition and text refinement.</desc>
+  <defs>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#ff8a00"/>
+      <stop offset="1" stop-color="#ffd966"/>
+    </linearGradient>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M32 0H0V32" fill="none" stroke="#2b2b2b" stroke-width="1"/>
+    </pattern>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="12" stdDeviation="18" flood-color="#000" flood-opacity=".38"/>
+    </filter>
+  </defs>
+  <rect width="1600" height="900" fill="#111"/>
+  <rect width="1600" height="900" fill="url(#grid)" opacity=".38"/>
+  <rect x="20" y="20" width="1560" height="860" rx="16" fill="#181818" stroke="#343434" filter="url(#shadow)"/>
+
+  <rect x="20" y="20" width="1560" height="64" rx="16" fill="#202020"/>
+  <rect x="20" y="68" width="1560" height="16" fill="#202020"/>
+  <path d="M48 54c12-17 21 17 33 0s21 17 33 0" fill="none" stroke="url(#accent)" stroke-width="5" stroke-linecap="round"/>
+  <text x="132" y="60" fill="#f5f1e8" font-family="'Space Grotesk',Segoe UI,sans-serif" font-size="24" font-weight="700">VoxBridge Compose</text>
+  <text x="133" y="76" fill="#9c9a94" font-family="Segoe UI,sans-serif" font-size="10" letter-spacing="2">LOCAL SPEECH WORKSPACE</text>
+
+  <g font-family="'Space Grotesk',Segoe UI,sans-serif" font-size="15" font-weight="600">
+    <rect x="493" y="34" width="102" height="40" rx="9" fill="#342719" stroke="#ff9f1c"/>
+    <text x="515" y="59" fill="#ffd18a">Compose</text>
+    <text x="625" y="59" fill="#aaa7a0">Status</text>
+    <text x="706" y="59" fill="#aaa7a0">History</text>
+    <text x="797" y="59" fill="#aaa7a0">Settings</text>
+    <text x="895" y="59" fill="#aaa7a0">About</text>
+  </g>
+  <rect x="1374" y="35" width="92" height="38" rx="9" fill="#2b2032" stroke="#6e4d83"/>
+  <path d="M1394 50v-3a7 7 0 0114 0v3m-17 0h20v15h-20z" fill="none" stroke="#c89be6" stroke-width="2"/>
+  <text x="1418" y="60" fill="#e4c7f6" font-family="Segoe UI,sans-serif" font-size="14" font-weight="600">Private</text>
+
+  <rect x="40" y="104" width="1520" height="76" rx="12" fill="#222" stroke="#393939"/>
+  <g font-family="Segoe UI,sans-serif">
+    <circle cx="67" cy="129" r="6" fill="#5fcf86"/>
+    <text x="82" y="134" fill="#efede7" font-size="14" font-weight="600">Ready</text>
+    <text x="82" y="156" fill="#999791" font-size="12">Speech recognition and text refinement loaded locally</text>
+
+    <circle cx="441" cy="128" r="5" fill="#5fcf86"/>
+    <text x="455" y="133" fill="#aaa7a0" font-size="12">VoxBridge · medium.en · Graphics accelerated</text>
+    <circle cx="797" cy="128" r="5" fill="#5fcf86"/>
+    <text x="811" y="133" fill="#aaa7a0" font-size="12">Embedded refinement · Graphics accelerated</text>
+
+    <circle cx="441" cy="153" r="5" fill="#ffb800"/>
+    <text x="455" y="158" fill="#dedbd3" font-size="12" font-weight="600">Comprehensive Rewrite</text>
+    <text x="627" y="158" fill="#85837e" font-size="12">1 agent</text>
+    <text x="797" y="158" fill="#85837e" font-size="12">Fidelity 82%</text>
+  </g>
+  <rect x="1325" y="121" width="211" height="44" rx="10" fill="url(#accent)"/>
+  <circle cx="1351" cy="143" r="8" fill="none" stroke="#211600" stroke-width="3"/>
+  <text x="1370" y="149" fill="#211600" font-family="'Space Grotesk',Segoe UI,sans-serif" font-size="15" font-weight="800">Start recording</text>
+
+  <g font-family="'Space Grotesk',Segoe UI,sans-serif">
+    <text x="52" y="219" fill="#f4f1e9" font-size="15" font-weight="700">Raw transcript</text>
+    <text x="810" y="219" fill="#f4f1e9" font-size="15" font-weight="700">Refined</text>
+    <text x="1457" y="219" fill="#918f89" font-size="12">Following output</text>
+  </g>
+
+  <rect x="40" y="238" width="744" height="568" rx="12" fill="#1e1e1e" stroke="#3b3b3b"/>
+  <rect x="800" y="238" width="760" height="568" rx="12" fill="#1e1e1e" stroke="#5b4529"/>
+  <rect x="800" y="238" width="4" height="568" rx="2" fill="url(#accent)"/>
+
+  <g fill="#d8d5ce" font-family="Segoe UI,sans-serif" font-size="20">
+    <text x="68" y="286">Here is a sample of spoken text captured locally. I want</text>
+    <text x="68" y="320">to keep the meaning intact, clean up recognition mistakes,</text>
+    <text x="68" y="354">and make the final result easier to read.</text>
+    <text x="68" y="420">The raw transcript remains visible so every change can be</text>
+    <text x="68" y="454">reviewed before the result is saved or offloaded.</text>
+  </g>
+  <g fill="#f0ede5" font-family="Segoe UI,sans-serif" font-size="20">
+    <text x="832" y="286">This sample was captured locally. VoxBridge Compose keeps</text>
+    <text x="832" y="320">the original meaning, corrects likely recognition errors, and</text>
+    <text x="832" y="354">turns the result into clear, readable text.</text>
+    <text x="832" y="420">The raw transcript stays visible beside the refined version,</text>
+    <text x="832" y="454">so every change can be reviewed before it is saved.</text>
+  </g>
+
+  <rect x="760" y="254" width="7" height="206" rx="3.5" fill="#4b4b4b"/>
+  <rect x="1537" y="254" width="7" height="206" rx="3.5" fill="#705536"/>
+
+  <rect x="40" y="824" width="1520" height="36" rx="9" fill="#202020"/>
+  <text x="58" y="847" fill="#8f8d87" font-family="Segoe UI,sans-serif" font-size="12">Local processing · No account required</text>
+  <text x="1325" y="847" fill="#8f8d87" font-family="Segoe UI,sans-serif" font-size="12">Sanitized demonstration</text>
+</svg>

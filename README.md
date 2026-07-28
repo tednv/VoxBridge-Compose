@@ -16,7 +16,7 @@ refine the result with an ordered set of local agents.
 
 - Local VoxBridge speech recognition with GPU acceleration and CPU fallback
 - Side-by-side raw transcript and refined text with independent scrolling
-- Embedded local text refinement or a user-configured Ollama service
+- Embedded local text refinement or an Ollama server on the local network
 - Ordered, editable agent profiles with fidelity controls and optional context
 - Private mode that retains no new history, recordings, or session logs
 - Configurable offload locations for text and optional source audio
@@ -24,6 +24,29 @@ refine the result with an ordered set of local agents.
 - Windows taskbar activity indicators for recording and transcription
 
 No account or hosted speech service is required.
+
+## Workspace
+
+![VoxBridge Compose workspace](docs/screenshots/compose-workspace.svg)
+
+## Architecture
+
+VoxBridge Compose keeps speech processing local and separates the pipeline into
+three layers:
+
+1. **Speech recognition:** whisper.cpp converts recorded audio into a raw
+   transcript.
+2. **Hardware mapping:** the VoxBridge runtime detects the available CPU and
+   graphics capabilities, then loads the appropriate whisper.cpp and embedded
+   model engine variants.
+3. **Text refinement:** configurable agents clean or rewrite the transcript
+   using either the bundled local model or a user-selected Ollama model. Ollama
+   may run on the same computer or on another machine reachable over the local
+   network.
+
+Audio is not sent to Ollama. Ollama receives text only when it is selected as
+the refinement provider. Users of a network Ollama server are responsible for
+the privacy and security of that connection.
 
 ## Status
 
