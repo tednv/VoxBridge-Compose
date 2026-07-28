@@ -1,0 +1,3 @@
+[submodule "voxbridge"]
+	path = voxbridge
+	url = https://github.com/tednv/VoxBridge

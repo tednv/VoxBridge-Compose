@@ -1,0 +1,63 @@
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+:root {
+  font-family: var(--typography-font-main);
+  line-height: 1.5;
+  font-weight: 400;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+html, body {
+  height: 100%;
+  width: 100%;
+}
+
+body {
+  min-width: 320px;
+  overflow: hidden;
+  color: var(--colors-text-primary);
+  background:
+    linear-gradient(rgba(255, 138, 0, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 138, 0, 0.025) 1px, transparent 1px),
+    var(--colors-bg-primary);
+  background-size: 48px 48px;
+}
+
+#root {
+  width: 100%;
+  height: 100%;
+}
+
+button, input, select, textarea {
+  font: inherit;
+}
+
+input[type="range"] {
+  accent-color: var(--colors-accent-primary);
+}
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: #34312d;
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+}
+
+@media (max-width: 720px) {
+  .app-navigation {
+    overflow-x: auto;
+  }
+  .compose-text-grid {
+    grid-template-columns: 1fr !important;
+  }
+}

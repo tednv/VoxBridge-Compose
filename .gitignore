@@ -1,29 +1,65 @@
-# Build output
-target/
-dist/
-build/
-out/
-
-# Dependencies
-node_modules/
-
-# Local configuration and secrets
-.env
-.env.*
-!.env.example
-*.key
-*.pem
-
-# Editor and operating-system files
-.idea/
-.vscode/
-.DS_Store
-Thumbs.db
-
-# Logs and temporary files
+# Logs
+logs
 *.log
-tmp/
-temp/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
 
-# Private Codex working-session records
+# Dependencies and build outputs
+node_modules
+deno.lock
+dist
+dist-ssr
+_site/
+*.local
+
+# Rust
+target
+src-tauri/target
+
+# App Data
+src-tauri/debug
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Archives
+.archive
+
+# Local Strategy/Temp
+temp/
+work/
+reference-systems/
+src-tauri/tauri.*-dev.json
+session-ses_*.md
+
+# Private local session history and notes (never published)
+AGENTS.md
 docs/session-history/
+docs/design-reference/
+docs/ROADMAP.local.md
+CLAUDE.md
+
+# Abandoned GGML_CPU_ALL_VARIANTS experiment (vendored+patched whisper-rs-sys copy,
+# kept out of git — see docs/session-history and docs/ROADMAP.local.md's "C shim loader"
+# entry for the superseding approach). Not referenced by Cargo.toml (patch commented out).
+src-tauri/vendor/whisper-rs-sys/
+
+# VoxBridge (docs/ROADMAP.local.md's "C shim loader" entry) now lives in its own repo,
+# github.com/tednv/VoxBridge, pulled in here as a git submodule (see .gitmodules) and as
+# a git dependency in src-tauri/Cargo.toml — nothing under voxbridge/ is tracked directly
+# by this repo anymore.
+# Built engine variant DLLs/SOs (voxbridge/scripts/build-engines.mjs output, staged here via
+# --out-dir by scripts/tauri-runner.mjs) - generated at build time, picked up by
+# tauri.conf.json's bundle.resources; not source, not committed.
+src-tauri/engines-dist/

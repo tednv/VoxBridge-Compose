@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.voxbridge.compose</id>
+  <name>VoxBridge Compose</name>
+  <summary>Local speech recognition and text refinement</summary>
+  <project_license>AGPL-3.0-only</project_license>
+  <metadata_license>CC0-1.0</metadata_license>
+  <developer id="com.voxbridge">
+    <name>VoxBridge Compose contributors</name>
+  </developer>
+  <pkgname>voxbridge-compose</pkgname>
+  <launchable type="desktop-id">com.voxbridge.compose.desktop</launchable>
+  <icon type="stock">com.voxbridge.compose</icon>
+  <description>
+    <p>
+      VoxBridge Compose is a local-first speech workspace for Windows and Linux. Start recording,
+      continue speaking while working in another window, then review both the raw transcript and refined text.
+    </p>
+    <p>
+      Speech recognition runs through the local VoxBridge runtime. Text refinement can use an embedded local model
+      or a user-configured Ollama service.
+    </p>
+    <p>
+      Private mode prevents new history, recording files, and diagnostic session logs from being retained.
+    </p>
+  </description>
+  <url type="homepage">https://github.com/tednv/VoxBridge-Compose</url>
+  <url type="bugtracker">https://github.com/tednv/VoxBridge-Compose/issues</url>
+  <url type="vcs-browser">https://github.com/tednv/VoxBridge-Compose</url>
+  <categories>
+    <category>Utility</category>
+    <category>Office</category>
+    <category>AudioVideo</category>
+  </categories>
+  <content_rating type="oars-1.1"/>
+</component>

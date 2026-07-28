@@ -1,0 +1,189 @@
+import { IconAlertCircle, IconBrandGithub, IconBug } from '@tabler/icons-preact';
+import { open } from '@tauri-apps/plugin-shell';
+import { invoke } from '@tauri-apps/api/core';
+import { useEffect, useState } from 'preact/hooks';
+import { Button } from '../components/Button.tsx';
+import { tabPanelPaddedStyle, tabPanelStyle } from '../theme/ui-primitives.ts';
+import { tokens } from '../design-tokens.ts';
+
+function HelpBubble({ label, text }: { label: string; text: string }) {
+  const [visible, setVisible] = useState(false);
+  return (
+    <span style={{ position: 'relative', display: 'inline-flex' }}>
+      <button type="button" aria-label={`${label}: ${text}`} onMouseEnter={() => setVisible(true)} onMouseLeave={() => setVisible(false)} onFocus={() => setVisible(true)} onBlur={() => setVisible(false)} style={{ width: '15px', height: '15px', padding: 0, borderRadius: '50%', border: '1px solid rgba(255,255,255,.18)', background: 'transparent', color: tokens.colors.textMuted, fontSize: '9px', lineHeight: '13px', cursor: 'help' }}>?</button>
+      {visible && <span role="tooltip" style={{ position: 'absolute', zIndex: 50, top: '20px', left: 0, width: '260px', padding: '8px 10px', borderRadius: '7px', border: '1px solid rgba(255,138,0,.22)', background: 'rgba(18,17,15,.98)', boxShadow: '0 10px 30px rgba(0,0,0,.4)', color: '#d7d1c7', fontSize: '11px', fontWeight: 450, lineHeight: 1.4, textTransform: 'none', letterSpacing: 0, whiteSpace: 'normal', pointerEvents: 'none' }}>{text}</span>}
+    </span>
+  );
+}
+
+interface StatusPageProps {
+  currentStatus: string;
+  appVersion: string;
+  modelStatus: Record<string, boolean>;
+  isModelLoading: boolean;
+  isComposeModelLoading: boolean;
+  composeModelLoadError: string | null;
+  modelLoadError: string | null;
+  config: {
+    transcription_mode: 'API' | 'Local';
+    output_method: 'Typewriter' | 'Clipboard' | 'Compose';
+    local_model_size: string;
+    local_engine: string;
+    hotkey: string;
+    hotkey_mode: 'sticky' | 'hold' | 'continuous';
+    enable_gpu: boolean;
+    compose_backend: 'embedded' | 'ollama_remote';
+    compose_model_path: string;
+    compose_use_gpu: boolean;
+    compose_ollama_url: string;
+    compose_ollama_model: string;
+  };
+  hasUpdateAvailable: boolean;
+  onOpenUpdateModal: () => void;
+  onOpenHardwareReport: () => void;
+}
+
+interface SessionStats {
+  bytesRecorded: number;
+  wordsTranscribed: number;
+  transcriptionsCount: number;
+  transcribeMsTotal: number;
+  gpuCount: number;
+  cpuCount: number;
+  apiCount: number;
+  compose: {
+    agentRuns: number;
+    accepted: number;
+    rejected: number;
+    failed: number;
+    msTotal: number;
+  };
+}
+
+const formatBytes = (bytes: number) => {
+  if (bytes >= 1_073_741_824) return `${(bytes / 1_073_741_824).toFixed(2)} GB`;
+  if (bytes >= 1_048_576) return `${(bytes / 1_048_576).toFixed(2)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${bytes} B`;
+};
+
+const formatDuration = (milliseconds: number) => {
+  if (milliseconds >= 1000) return `${(milliseconds / 1000).toFixed(2)} s`;
+  return `${milliseconds} milliseconds`;
+};
+
+export function StatusPage({
+  currentStatus,
+  appVersion,
+  modelStatus,
+  isModelLoading,
+  isComposeModelLoading,
+  composeModelLoadError,
+  modelLoadError,
+  config,
+  hasUpdateAvailable,
+  onOpenUpdateModal,
+  onOpenHardwareReport,
+}: StatusPageProps) {
+  const [stats, setStats] = useState<SessionStats | null>(null);
+
+  useEffect(() => {
+    const refresh = () => invoke<SessionStats>('get_session_stats').then(setStats).catch(() => {});
+    refresh();
+    const interval = setInterval(refresh, 3000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const transcriptionReady = Boolean(modelStatus[config.local_model_size]);
+  const composeReady = config.compose_backend === 'embedded'
+    ? Boolean(config.compose_model_path)
+    : Boolean(config.compose_ollama_model);
+  const pipelineReady = transcriptionReady && composeReady && !isModelLoading && !isComposeModelLoading && !composeModelLoadError;
+  const runtimeBusy = currentStatus !== 'Ready' && currentStatus !== 'Error';
+  const transcriptionAverage = stats?.transcriptionsCount
+    ? stats.transcribeMsTotal / stats.transcriptionsCount
+    : 0;
+  const composeAverage = stats?.compose.agentRuns
+    ? stats.compose.msTotal / stats.compose.agentRuns
+    : 0;
+  const acceptanceRate = stats?.compose.agentRuns
+    ? (stats.compose.accepted / stats.compose.agentRuns) * 100
+    : 0;
+  const requestCount = (stats?.transcriptionsCount ?? 0) + (stats?.compose.agentRuns ?? 0);
+
+  const metrics = [
+    ['Audio captured', formatBytes(stats?.bytesRecorded ?? 0), 'Audio data processed during this application session.'],
+    ['Words recognized', (stats?.wordsTranscribed ?? 0).toLocaleString(), 'Words produced by speech recognition before agent refinement.'],
+    ['Recognition runs', (stats?.transcriptionsCount ?? 0).toLocaleString(), 'Completed speech-recognition requests during this session.'],
+    ['Pipeline requests', requestCount.toLocaleString(), 'Combined speech-recognition and agent-refinement requests.'],
+    ['Agent runs', (stats?.compose.agentRuns ?? 0).toLocaleString(), 'Individual text-refinement agent executions.'],
+    ['Accepted', (stats?.compose.accepted ?? 0).toLocaleString(), 'Agent results accepted after fidelity and length checks.'],
+    ['Rejected', (stats?.compose.rejected ?? 0).toLocaleString(), 'Agent results rejected by fidelity or excessive-length safeguards.'],
+    ['Failed', (stats?.compose.failed ?? 0).toLocaleString(), 'Agent executions that ended with an error.'],
+    ['Acceptance', `${acceptanceRate.toFixed(1)}%`, 'Percentage of agent results accepted by the refinement safeguards.'],
+    ['Recognition average', formatDuration(transcriptionAverage), 'Average speech-recognition processing time per recording.'],
+    ['Refinement average', formatDuration(composeAverage), 'Average processing time for each text-refinement agent run.'],
+    ['Graphics / processor runs', `${stats?.gpuCount ?? 0} / ${stats?.cpuCount ?? 0}`, 'Speech-recognition runs handled with graphics acceleration versus the main processor.'],
+  ];
+
+  const runtimeRows = [
+    ['Application', currentStatus, currentStatus === 'Error' ? tokens.colors.error : runtimeBusy ? tokens.colors.accentHover : tokens.colors.success, 'Overall recording and processing state.'],
+    ['Speech recognition', `${config.local_engine} · ${config.local_model_size}`, transcriptionReady && !isModelLoading ? tokens.colors.success : tokens.colors.accentHover, 'The local model that converts recorded speech into text.'],
+    ['Text refinement', config.compose_backend === 'embedded'
+      ? 'Embedded'
+      : `Ollama · ${config.compose_ollama_model || 'No model'}`, composeModelLoadError ? tokens.colors.error : composeReady && !isComposeModelLoading ? tokens.colors.success : tokens.colors.accentHover, 'The model provider used by agents to clean and rewrite recognized text.'],
+    ['Pipeline', pipelineReady ? 'Operational' : composeModelLoadError ? composeModelLoadError : runtimeBusy ? currentStatus : 'Unavailable', pipelineReady ? tokens.colors.success : composeModelLoadError ? tokens.colors.error : tokens.colors.accentHover, 'Combined readiness of speech recognition, text refinement, and the active agent chain.'],
+  ] as const;
+
+  return (
+    <div style={{ ...tabPanelStyle, overflow: 'auto' }} key="status">
+      <div style={{ ...tabPanelPaddedStyle, gap: '14px', paddingBottom: '40px' }}>
+        {modelLoadError && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '10px 12px', border: '1px solid rgba(239,102,94,.35)', borderRadius: tokens.radii.input, color: tokens.colors.error, background: 'rgba(239,102,94,.08)', fontSize: tokens.typography.sizeSm }}>
+            <IconAlertCircle size={17} />
+            <span style={{ flex: 1 }}>{modelLoadError}</span>
+            <Button variant="ghost" size="sm" onClick={onOpenHardwareReport}>Hardware report</Button>
+          </div>
+        )}
+
+        <section style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', border: '1px solid rgba(255,255,255,.08)', borderRadius: tokens.radii.panel, overflow: 'hidden', background: 'rgba(15,15,13,.7)' }}>
+          {runtimeRows.map(([label, value, stateColor, help], index) => (
+            <div key={label} style={{ padding: '13px 15px', borderLeft: index ? '1px solid rgba(255,255,255,.08)' : 'none' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '7px', color: tokens.colors.textMuted, fontSize: '10px', textTransform: 'uppercase', letterSpacing: '.08em' }}>
+                <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: typeof stateColor === 'string' ? stateColor : stateColor ? tokens.colors.success : tokens.colors.accentHover }} />
+                {label}
+                <HelpBubble label={label} text={help} />
+              </div>
+              <div style={{ marginTop: '6px', color: tokens.colors.textPrimary, fontSize: tokens.typography.sizeXs, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{value}</div>
+            </div>
+          ))}
+        </section>
+
+        <section style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', borderTop: '1px solid rgba(255,255,255,.08)', borderLeft: '1px solid rgba(255,255,255,.08)' }}>
+          {metrics.map(([label, value, help]) => (
+            <div key={label} style={{ minHeight: '86px', padding: '14px 16px', borderRight: '1px solid rgba(255,255,255,.08)', borderBottom: '1px solid rgba(255,255,255,.08)', background: 'rgba(255,255,255,.012)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: tokens.colors.textMuted, fontSize: '10px', textTransform: 'uppercase', letterSpacing: '.08em' }}>
+                {label}
+                <HelpBubble label={label} text={help} />
+              </div>
+              <div style={{ marginTop: '9px', color: tokens.colors.textPrimary, fontFamily: tokens.typography.fontMono, fontSize: '20px', fontWeight: 700 }}>{value}</div>
+            </div>
+          ))}
+        </section>
+
+        <footer style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', color: tokens.colors.textMuted, fontSize: tokens.typography.sizeXs }}>
+          <span>VoxBridge Compose v{appVersion}</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <Button variant="ghost" size="sm" onClick={onOpenHardwareReport} title="Review a sanitized hardware report and open a GitHub issue">
+              <IconBug size={15} /> Report a bug
+            </Button>
+            {hasUpdateAvailable && <Button variant="ghost" size="sm" onClick={onOpenUpdateModal}>Update available</Button>}
+            <Button variant="ghost" size="sm" onClick={() => open('https://github.com/tednv/VoxBridge-Compose')} title="Open repository">
+              <IconBrandGithub size={15} /> Repository
+            </Button>
+          </div>
+        </footer>
+      </div>
+    </div>
+  );
+}
