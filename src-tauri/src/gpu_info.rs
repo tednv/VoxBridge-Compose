@@ -4,6 +4,7 @@ use serde::Serialize;
 pub struct GpuVramInfo {
     pub adapter_name: String,
     pub dedicated_vram_bytes: u64,
+    pub current_usage_bytes: u64,
     pub available_vram_bytes: u64,
 }
 
@@ -62,6 +63,7 @@ pub fn get_primary_gpu_vram_info() -> Option<GpuVramInfo> {
             let candidate = GpuVramInfo {
                 adapter_name: name,
                 dedicated_vram_bytes: desc.DedicatedVideoMemory as u64,
+                current_usage_bytes: info.CurrentUsage,
                 available_vram_bytes: available,
             };
 

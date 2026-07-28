@@ -135,13 +135,13 @@ pub async fn continuous_listen_and_transcribe(
     let spawn_utterance = |audio_data: Vec<u8>| {
         if let Err(error) = validate_audio_duration(&audio_data) {
             crate::log_info!("Continuous listen: utterance skipped ({})", error);
-            return;
+            return None;
         }
         let config = config.clone();
         let app_handle = app_handle.clone();
         let whisper_engine = whisper_engine.clone();
         let session_context = session_context.clone();
-        tauri::async_runtime::spawn(async move {
+        Some(tauri::async_runtime::spawn(async move {
             if let Err(error) = transcribe_and_deliver(
                 audio_data,
                 config,
@@ -154,13 +154,18 @@ pub async fn continuous_listen_and_transcribe(
             {
                 crate::log_info!("Continuous listen: utterance transcription failed: {}", error);
             }
-        });
+        }))
     };
 
+    let mut transcription_tasks = Vec::new();
     loop {
         let still_recording = *is_recording.lock().unwrap();
         match utterance_rx.try_recv() {
-            Ok(wav) => spawn_utterance(wav),
+            Ok(wav) => {
+                if let Some(task) = spawn_utterance(wav) {
+                    transcription_tasks.push(task);
+                }
+            }
             Err(std::sync::mpsc::TryRecvError::Empty) => {
                 if !still_recording {
                     // Hotkey pressed again to stop: keep draining (with a short blocking
@@ -170,7 +175,9 @@ pub async fn continuous_listen_and_transcribe(
                     while let Ok(wav) =
                         utterance_rx.recv_timeout(std::time::Duration::from_millis(500))
                     {
-                        spawn_utterance(wav);
+                        if let Some(task) = spawn_utterance(wav) {
+                            transcription_tasks.push(task);
+                        }
                     }
                     break;
                 }
@@ -180,7 +187,15 @@ pub async fn continuous_listen_and_transcribe(
         }
     }
 
-    crate::app::status::emit_status_to_frontend("Ready").await;
+    // Do not announce a completed session while its final rolling windows are still
+    // transcribing. Once all captured speech has arrived, schedule one authoritative
+    // whole-document reconciliation; the UI waits for that correction before asking
+    // the model for the final topic-based filename.
+    for task in transcription_tasks {
+        let _ = task.await;
+    }
+    crate::app::status::emit_status_to_frontend("Finalizing refinement").await;
+    crate::compose::rerun_current_document(&app_handle);
     Ok(())
 }
 

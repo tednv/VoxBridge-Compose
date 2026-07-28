@@ -1,7 +1,7 @@
 use crate::gpu_info;
 
 #[cfg(target_os = "windows")]
-fn system_memory_bytes() -> Option<(u64, u64)> {
+pub(crate) fn system_memory_bytes() -> Option<(u64, u64)> {
     use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
 
     let mut status = MEMORYSTATUSEX {
@@ -13,7 +13,7 @@ fn system_memory_bytes() -> Option<(u64, u64)> {
 }
 
 #[cfg(not(target_os = "windows"))]
-fn system_memory_bytes() -> Option<(u64, u64)> {
+pub(crate) fn system_memory_bytes() -> Option<(u64, u64)> {
     let contents = std::fs::read_to_string("/proc/meminfo").ok()?;
     let read_kib = |key: &str| {
         contents
@@ -118,7 +118,7 @@ pub fn build_hardware_report(last_gpu_error: Option<&str>) -> String {
                 "GPU: {}\nGraphics memory: {:.1} GB dedicated, {:.1} GB used, {:.1} GB free\n",
                 info.adapter_name,
                 gib(info.dedicated_vram_bytes),
-                gib(info.dedicated_vram_bytes.saturating_sub(info.available_vram_bytes)),
+                gib(info.current_usage_bytes),
                 gib(info.available_vram_bytes)
             ));
         }

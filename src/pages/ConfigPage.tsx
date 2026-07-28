@@ -25,6 +25,19 @@ interface OllamaModelInfo {
   quantizationLevel: string;
 }
 
+interface EmbeddedModelOption {
+  id: string;
+  name: string;
+  description: string;
+  filePath: string;
+  downloadBytes: number;
+  installed: boolean;
+  recommended: boolean;
+  fitsGraphicsMemory: boolean | null;
+  estimatedCombinedVramBytes: number;
+  graphicsMemoryNote: string;
+}
+
 interface ComposeAgent {
   id: string;
   name: string;
@@ -435,6 +448,63 @@ export function ConfigPage(props: ConfigPageProps) {
   const [ollamaModels, setOllamaModels] = useState<OllamaModelInfo[]>([]);
   const [isDetectingOllamaModels, setIsDetectingOllamaModels] = useState(false);
   const [ollamaDetectError, setOllamaDetectError] = useState<string | null>(null);
+  const [embeddedModels, setEmbeddedModels] = useState<EmbeddedModelOption[]>([]);
+  const [selectedEmbeddedModelId, setSelectedEmbeddedModelId] = useState<string>('custom');
+  const [embeddedModelBusy, setEmbeddedModelBusy] = useState(false);
+  const [embeddedModelError, setEmbeddedModelError] = useState<string | null>(null);
+
+  const refreshEmbeddedModels = () => {
+    invoke<EmbeddedModelOption[]>('list_embedded_compose_models')
+      .then((models) => {
+        setEmbeddedModels(models);
+        const current = models.find((model) =>
+          model.filePath.toLocaleLowerCase() === config.compose_model_path.toLocaleLowerCase());
+        setSelectedEmbeddedModelId(current?.id ?? 'custom');
+      })
+      .catch((error) => setEmbeddedModelError(String(error)));
+  };
+
+  useEffect(() => {
+    refreshEmbeddedModels();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [config.local_model_size, config.enable_gpu, config.compose_use_gpu]);
+
+  const chooseEmbeddedModel = (modelId: string) => {
+    setSelectedEmbeddedModelId(modelId);
+    setEmbeddedModelError(null);
+    const model = embeddedModels.find((candidate) => candidate.id === modelId);
+    if (model?.fitsGraphicsMemory === false) {
+      setEmbeddedModelError(`Selection blocked: ${model.graphicsMemoryNote}`);
+      return;
+    }
+    if (model?.installed) updateConfig('compose_model_path', model.filePath);
+  };
+
+  const downloadSelectedEmbeddedModel = () => {
+    const model = embeddedModels.find((candidate) => candidate.id === selectedEmbeddedModelId);
+    if (!model) return;
+    setEmbeddedModelBusy(true);
+    setEmbeddedModelError(null);
+    invoke<string>('download_embedded_compose_model', { modelId: model.id })
+      .then((path) => {
+        updateConfig('compose_model_path', path);
+        refreshEmbeddedModels();
+      })
+      .catch((error) => setEmbeddedModelError(String(error)))
+      .finally(() => setEmbeddedModelBusy(false));
+  };
+
+  const chooseCustomEmbeddedModel = async () => {
+    const selected = await openDialog({
+      multiple: false,
+      directory: false,
+      filters: [{ name: 'GGUF model', extensions: ['gguf'] }],
+    });
+    if (typeof selected === 'string') {
+      setSelectedEmbeddedModelId('custom');
+      updateConfig('compose_model_path', selected);
+    }
+  };
 
   const detectOllamaModels = () => {
     setIsDetectingOllamaModels(true);
@@ -640,14 +710,56 @@ export function ConfigPage(props: ConfigPageProps) {
                 <ConfigField label="Refinement graphics acceleration" description="Uses VoxBridge graphics acceleration for the embedded text-refinement model. Speech recognition has a separate setting. This does not control Ollama.">
                   <Switch checked={config.compose_use_gpu} onChange={(checked) => updateConfig('compose_use_gpu', checked)} />
                 </ConfigField>
-                <ConfigField label="Local refinement model" description="Full path to a compatible local text-refinement model file.">
-                  <input
-                    style={inputBaseStyle}
-                    type="text"
-                    value={config.compose_model_path}
-                    onChange={(e: Event) => updateConfig('compose_model_path', (e.target as HTMLInputElement).value)}
-                    placeholder="C:\models\qwen2.5-0.5b-instruct-q4_k_m.gguf"
-                  />
+                <ConfigField label="Embedded refinement model" description="Choose a managed local model. Download and selection are blocked when the combined speech-recognition and refinement estimate exceeds dedicated graphics memory. Custom GGUF files remain available for advanced use.">
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: tokens.spacing.sm, width: '100%' }}>
+                    <div style={selectWrapperStyle}>
+                      <SelectField
+                        value={selectedEmbeddedModelId}
+                        onChange={chooseEmbeddedModel}
+                        searchable={false}
+                        ariaLabel="Embedded refinement model"
+                        options={[
+                          ...embeddedModels.map((model) => ({
+                            value: model.id,
+                            label: `${model.name}${model.recommended ? ' · Recommended' : ''} · ${Math.round(model.downloadBytes / 1024 / 1024)} MB${model.installed ? ' · Installed' : ''}`,
+                          })),
+                          { value: 'custom', label: 'Custom GGUF file' },
+                        ]}
+                      />
+                      {selectedEmbeddedModelId === 'custom' ? (
+                        <Button variant="secondary" size="sm" onClick={chooseCustomEmbeddedModel}>Browse</Button>
+                      ) : (() => {
+                        const selected = embeddedModels.find((model) => model.id === selectedEmbeddedModelId);
+                        if (!selected || selected.installed) return null;
+                        return (
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            onClick={downloadSelectedEmbeddedModel}
+                            disabled={embeddedModelBusy || selected.fitsGraphicsMemory === false}
+                          >
+                            {embeddedModelBusy ? 'Downloading...' : 'Download'}
+                          </Button>
+                        );
+                      })()}
+                    </div>
+                    {(() => {
+                      const selected = embeddedModels.find((model) => model.id === selectedEmbeddedModelId);
+                      if (!selected) {
+                        return config.compose_model_path
+                          ? <div style={helperTextStyle}>{config.compose_model_path}</div>
+                          : null;
+                      }
+                      return (
+                        <div style={{ ...helperTextStyle, color: selected.fitsGraphicsMemory === false ? tokens.colors.error : tokens.colors.textMuted }}>
+                          {selected.description} {selected.graphicsMemoryNote}
+                        </div>
+                      );
+                    })()}
+                    {embeddedModelError && (
+                      <div style={{ ...helperTextStyle, color: tokens.colors.error }}>{embeddedModelError}</div>
+                    )}
+                  </div>
                 </ConfigField>
               </>
             ) : (

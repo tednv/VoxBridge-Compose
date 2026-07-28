@@ -13,9 +13,9 @@ source submodules.
 | [Tauri](https://tauri.app/) | Desktop application framework | Apache-2.0 OR MIT |
 | [Preact](https://preactjs.com/) | User-interface library | MIT |
 | [Tabler Icons](https://tabler.io/icons) | Interface icons | MIT |
-| [Qwen2.5 0.5B Instruct](https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF) | Optional downloaded refinement model | Apache-2.0 |
+| [Qwen3 4B Instruct 2507](https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507) ([GGUF](https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF)) | Optional downloaded refinement model | Apache-2.0 |
 
-The application can download Qwen2.5 model weights or connect to Ollama. Those
+The application can download Qwen3 model weights or connect to Ollama. Those
 models and services are not relicensed by VoxBridge Compose; review their own
 terms before use or redistribution. Model weights are downloaded on demand and
 are not included in the application source repository.

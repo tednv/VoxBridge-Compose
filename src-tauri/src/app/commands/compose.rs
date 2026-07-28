@@ -2,22 +2,82 @@ use crate::{gpu_info, model_manager, AppState};
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 
-pub const DEFAULT_EMBEDDED_MODEL_NAME: &str = "qwen2.5-0.5b-instruct-q4_k_m.gguf";
-pub const DEFAULT_OLLAMA_MODEL: &str = "qwen2.5:0.5b";
+pub const DEFAULT_EMBEDDED_MODEL_NAME: &str = "qwen3-4b-instruct-2507-q4_k_m.gguf";
+pub const LEGACY_EMBEDDED_MODEL_NAME: &str = "qwen2.5-0.5b-instruct-q4_k_m.gguf";
+pub const DEFAULT_OLLAMA_MODEL: &str = "qwen3:4b-instruct";
 const DEFAULT_EMBEDDED_MODEL_URL: &str =
-    "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf";
+    "https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf";
+const EMBEDDED_MODEL_SAFETY_RESERVE_BYTES: u64 = 384 * 1024 * 1024;
+
+struct EmbeddedModelDefinition {
+    id: &'static str,
+    name: &'static str,
+    description: &'static str,
+    file_name: &'static str,
+    url: &'static str,
+    download_bytes: u64,
+    recommended: bool,
+}
+
+const EMBEDDED_MODELS: &[EmbeddedModelDefinition] = &[
+    EmbeddedModelDefinition {
+        id: "qwen3-4b-instruct-2507-q4",
+        name: "Qwen3 4B Instruct",
+        description: "Best embedded editing quality; recommended for graphics cards with 6 GB or more.",
+        file_name: DEFAULT_EMBEDDED_MODEL_NAME,
+        url: DEFAULT_EMBEDDED_MODEL_URL,
+        download_bytes: 2_497_000_000,
+        recommended: true,
+    },
+    EmbeddedModelDefinition {
+        id: "qwen2.5-1.5b-instruct-q4",
+        name: "Qwen2.5 1.5B Instruct",
+        description: "Lighter fallback for systems with less graphics memory.",
+        file_name: "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+        url: "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf",
+        download_bytes: 986_000_000,
+        recommended: false,
+    },
+];
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EmbeddedModelOption {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub file_path: String,
+    pub download_bytes: u64,
+    pub installed: bool,
+    pub recommended: bool,
+    pub fits_graphics_memory: Option<bool>,
+    pub estimated_combined_vram_bytes: u64,
+    pub graphics_memory_note: String,
+}
+
+pub fn uses_legacy_default_embedded_model(path: &std::path::Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case(LEGACY_EMBEDDED_MODEL_NAME))
+}
 
 pub async fn ensure_default_embedded_model() -> Result<String, String> {
+    download_embedded_model_definition(&EMBEDDED_MODELS[0]).await
+}
+
+async fn download_embedded_model_definition(
+    definition: &EmbeddedModelDefinition,
+) -> Result<String, String> {
     let directory = crate::get_app_config_root_dir()?.join("models").join("compose");
     std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
-    let destination = directory.join(DEFAULT_EMBEDDED_MODEL_NAME);
+    let destination = directory.join(definition.file_name);
     if destination.exists() {
         return Ok(destination.to_string_lossy().to_string());
     }
 
     let temporary = destination.with_extension("gguf.download");
     let mut response = reqwest::Client::new()
-        .get(format!("{DEFAULT_EMBEDDED_MODEL_URL}?download=true"))
+        .get(format!("{}?download=true", definition.url))
         .send()
         .await
         .map_err(|error| format!("Could not download the default embedded model: {}", error))?
@@ -51,6 +111,102 @@ pub async fn ensure_default_embedded_model() -> Result<String, String> {
         .await
         .map_err(|error| error.to_string())?;
     Ok(destination.to_string_lossy().to_string())
+}
+
+fn embedded_model_memory_fit(
+    state: &AppState,
+    definition: &EmbeddedModelDefinition,
+) -> (Option<bool>, u64, String) {
+    let config = state.config.lock().unwrap();
+    let whisper_bytes = if config.enable_gpu {
+        model_manager::ModelManager::get_available_models()
+            .iter()
+            .find(|model| model.size == config.local_model_size)
+            .map(|model| (model.file_size as f64 * VRAM_OVERHEAD_MULTIPLIER) as u64)
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    let compose_bytes =
+        (definition.download_bytes as f64 * VRAM_OVERHEAD_MULTIPLIER) as u64;
+    let required = whisper_bytes
+        .saturating_add(compose_bytes)
+        .saturating_add(EMBEDDED_MODEL_SAFETY_RESERVE_BYTES);
+    drop(config);
+
+    match gpu_info::get_primary_gpu_vram_info() {
+        Some(gpu) => {
+            let fits = required <= gpu.dedicated_vram_bytes;
+            let note = if fits {
+                format!(
+                    "Estimated combined allocation {:.1} GB of {:.1} GB, including a {:.0} MB safety reserve.",
+                    required as f64 / 1_073_741_824.0,
+                    gpu.dedicated_vram_bytes as f64 / 1_073_741_824.0,
+                    EMBEDDED_MODEL_SAFETY_RESERVE_BYTES as f64 / 1_048_576.0
+                )
+            } else {
+                format!(
+                    "Needs about {:.1} GB combined, but {} reports {:.1} GB dedicated graphics memory.",
+                    required as f64 / 1_073_741_824.0,
+                    gpu.adapter_name,
+                    gpu.dedicated_vram_bytes as f64 / 1_073_741_824.0
+                )
+            };
+            (Some(fits), required, note)
+        }
+        None => (
+            None,
+            required,
+            "Graphics-memory capacity could not be verified on this platform.".to_string(),
+        ),
+    }
+}
+
+#[tauri::command]
+pub async fn list_embedded_compose_models(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<EmbeddedModelOption>, String> {
+    let directory = crate::get_app_config_root_dir()?.join("models").join("compose");
+    Ok(EMBEDDED_MODELS
+        .iter()
+        .map(|definition| {
+            let path = directory.join(definition.file_name);
+            let (fits, estimated, note) = embedded_model_memory_fit(&state, definition);
+            EmbeddedModelOption {
+                id: definition.id.to_string(),
+                name: definition.name.to_string(),
+                description: definition.description.to_string(),
+                file_path: path.to_string_lossy().to_string(),
+                download_bytes: definition.download_bytes,
+                installed: path.exists(),
+                recommended: definition.recommended,
+                fits_graphics_memory: fits,
+                estimated_combined_vram_bytes: estimated,
+                graphics_memory_note: note,
+            }
+        })
+        .collect())
+}
+
+#[tauri::command]
+pub async fn download_embedded_compose_model(
+    state: tauri::State<'_, AppState>,
+    model_id: String,
+) -> Result<String, String> {
+    let definition = EMBEDDED_MODELS
+        .iter()
+        .find(|model| model.id == model_id)
+        .ok_or_else(|| "Unknown embedded model selection".to_string())?;
+    let (fits, _, note) = embedded_model_memory_fit(&state, definition);
+    if fits == Some(false) {
+        return Err(format!("Download blocked: {note}"));
+    }
+    crate::app::status::emit_status_to_frontend(&format!(
+        "Downloading {}",
+        definition.name
+    ))
+    .await;
+    download_embedded_model_definition(definition).await
 }
 
 pub async fn ensure_ollama_model(base_url: &str, model: &str) -> Result<(), String> {
@@ -169,46 +325,21 @@ pub async fn revert_compose_batch(
     )
 }
 
-/// Real re-run version of the fidelity slider: re-executes `agent_id` (at
-/// `threshold` instead of its configured value) and everything after it in the chain,
-/// against every batch in history, with actual LLM calls - not just re-comparing an
-/// already-stored score. Debounced on the frontend, since each move here costs a real
-/// inference pass per batch.
+/// Applies the saved fidelity setting by rebuilding the current document once with the
+/// active agent chain. Contribution batches may overlap by design, so replaying every
+/// retained batch separately is both expensive and incorrect for a live document.
 #[tauri::command]
 pub async fn recompute_compose_fidelity(
-    state: tauri::State<'_, AppState>,
     app_handle: tauri::AppHandle,
     agent_id: String,
     threshold: f64,
 ) -> Result<(), String> {
-    let batch_count = crate::compose::history_snapshot(&state.compose_history).len();
     crate::log_info!(
-        "Compose: recompute_compose_fidelity invoked (agent_id='{}', threshold={:.2}, batches_in_history={})",
+        "Compose: rebuilding current document after fidelity change (agent_id='{}', threshold={:.2})",
         agent_id,
-        threshold,
-        batch_count
+        threshold
     );
-    let cfg = state.config.lock().unwrap().clone();
-    let history = state.compose_history.clone();
-    let buffer = state.compose_buffer.clone();
-    let raw_buffer = state.compose_raw_buffer.clone();
-    let backend_cache = state.compose_backend.clone();
-
-    tokio::task::spawn_blocking(move || {
-        crate::compose::recompute_from_agent(
-            &history,
-            &buffer,
-            &raw_buffer,
-            &backend_cache,
-            &cfg,
-            &app_handle,
-            &agent_id,
-            threshold,
-        );
-    })
-    .await
-    .map_err(|e| e.to_string())?;
-
+    crate::compose::rerun_current_document(&app_handle);
     Ok(())
 }
 
@@ -216,6 +347,7 @@ pub async fn recompute_compose_fidelity(
 pub async fn clear_compose_text(state: tauri::State<'_, AppState>) -> Result<(), String> {
     state.compose_buffer.lock().unwrap().clear();
     state.compose_raw_buffer.lock().unwrap().clear();
+    crate::compose::reset_pending(&state.compose_pending);
     // The batch history is a set of offsets into the buffer just cleared - once the
     // buffer resets to empty, those offsets are stale, so any later revert attempt
     // would misbehave if the history stuck around.
@@ -354,6 +486,7 @@ pub struct ComposeDumpResult {
 #[tauri::command]
 pub async fn dump_compose_text(
     state: tauri::State<'_, AppState>,
+    app_handle: tauri::AppHandle,
     text: String,
 ) -> Result<ComposeDumpResult, String> {
     if text.trim().is_empty() {
@@ -363,7 +496,20 @@ pub async fn dump_compose_text(
     let dictations_dir = dictations_dir(&state)?;
     std::fs::create_dir_all(&dictations_dir).map_err(|e| e.to_string())?;
 
-    let slug = crate::compose::filename_slug(&text);
+    let title_text = text.clone();
+    let backend_cache = state.compose_backend.clone();
+    let config = state.config.lock().unwrap().clone();
+    let title_app_handle = app_handle.clone();
+    let slug = tokio::task::spawn_blocking(move || {
+        crate::compose::semantic_filename_slug(
+            &title_text,
+            &backend_cache,
+            &config,
+            &title_app_handle,
+        )
+    })
+    .await
+    .unwrap_or_else(|_| crate::compose::filename_slug(&text));
     let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
     let file_name = format!("{}_{}.txt", slug, timestamp);
     let file_path = dictations_dir.join(&file_name);
@@ -403,12 +549,39 @@ pub async fn dump_compose_text(
     })
 }
 
+#[tauri::command]
+pub async fn suggest_compose_filename(
+    state: tauri::State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+    text: String,
+) -> Result<String, String> {
+    if text.trim().is_empty() {
+        return Ok("dictation".to_string());
+    }
+    crate::log_info!(
+        "Compose: generating semantic filename from {} words",
+        text.split_whitespace().count()
+    );
+    let backend_cache = state.compose_backend.clone();
+    let config = state.config.lock().unwrap().clone();
+    let slug = tokio::task::spawn_blocking(move || {
+        crate::compose::semantic_filename_slug(&text, &backend_cache, &config, &app_handle)
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+    crate::log_info!("Compose: semantic filename selected '{}'", slug);
+    Ok(slug)
+}
+
 /// Drops the cached Compose backend so the next utterance reloads it from current
 /// config - called when the user changes backend/model/GPU settings while the app is
 /// running, rather than requiring a restart to pick up the change.
 #[tauri::command]
 pub async fn invalidate_compose_backend(state: tauri::State<'_, AppState>) -> Result<(), String> {
-    crate::compose::invalidate_backend(&state.compose_backend);
+    crate::compose::invalidate_backend(
+        &state.compose_backend,
+        &state.compose_backend_generation,
+    );
     Ok(())
 }
 
@@ -451,11 +624,64 @@ pub struct CombinedVramCheck {
     pub gpu_detected: bool,
     pub adapter_name: Option<String>,
     pub dedicated_vram_bytes: Option<u64>,
+    pub gpu_current_usage_bytes: Option<u64>,
+    pub gpu_available_vram_bytes: Option<u64>,
+    pub system_memory_total_bytes: Option<u64>,
+    pub system_memory_available_bytes: Option<u64>,
     /// Estimated whisper VRAM usage, only if Local+GPU transcription is selected.
     pub whisper_estimate_bytes: u64,
-    /// Estimated Compose-model VRAM usage, only if Compose+embedded+GPU is selected.
+    /// Embedded model estimate or live selected-model VRAM reported by local Ollama.
     pub compose_estimate_bytes: u64,
+    pub compose_memory_source: String,
     pub total_usage_percent: Option<f64>,
+}
+
+#[derive(Deserialize)]
+struct OllamaRunningModels {
+    #[serde(default)]
+    models: Vec<OllamaRunningModel>,
+}
+
+#[derive(Deserialize)]
+struct OllamaRunningModel {
+    #[serde(default, alias = "model")]
+    name: String,
+    #[serde(default)]
+    size_vram: u64,
+}
+
+fn is_local_ollama_url(url: &str) -> bool {
+    let normalized = url.to_ascii_lowercase();
+    normalized.contains("://localhost")
+        || normalized.contains("://127.0.0.1")
+        || normalized.contains("://[::1]")
+}
+
+async fn local_ollama_vram(url: &str, selected_model: &str) -> Option<u64> {
+    if !is_local_ollama_url(url) {
+        return None;
+    }
+    let endpoint = format!("{}/api/ps", url.trim_end_matches('/'));
+    let response = reqwest::Client::new()
+        .get(endpoint)
+        .timeout(std::time::Duration::from_secs(2))
+        .send()
+        .await
+        .ok()?
+        .error_for_status()
+        .ok()?
+        .json::<OllamaRunningModels>()
+        .await
+        .ok()?;
+    response
+        .models
+        .iter()
+        .find(|model| model.name == selected_model)
+        .map(|model| model.size_vram)
+        .or_else(|| {
+            let total = response.models.iter().map(|model| model.size_vram).sum();
+            (total > 0).then_some(total)
+        })
 }
 
 /// Breaks the GPU VRAM estimate down by which feature is actually using it - whisper
@@ -466,7 +692,15 @@ pub struct CombinedVramCheck {
 pub async fn check_combined_vram(
     state: tauri::State<'_, AppState>,
 ) -> Result<CombinedVramCheck, String> {
-    let (enable_gpu, local_model_size, compose_backend, compose_use_gpu, compose_model_path) = {
+    let (
+        enable_gpu,
+        local_model_size,
+        compose_backend,
+        compose_use_gpu,
+        compose_model_path,
+        compose_ollama_url,
+        compose_ollama_model,
+    ) = {
         let config = state.config.lock().unwrap();
         (
             config.enable_gpu,
@@ -474,6 +708,8 @@ pub async fn check_combined_vram(
             config.compose_backend.clone(),
             config.compose_use_gpu,
             config.compose_model_path.clone(),
+            config.compose_ollama_url.clone(),
+            config.compose_ollama_model.clone(),
         )
     };
 
@@ -487,13 +723,24 @@ pub async fn check_combined_vram(
         0
     };
 
-    let compose_estimate_bytes = if compose_backend == "embedded" && compose_use_gpu {
-        std::fs::metadata(&compose_model_path)
+    let (compose_estimate_bytes, compose_memory_source) =
+        if compose_backend == "embedded" && compose_use_gpu {
+            (
+                std::fs::metadata(&compose_model_path)
             .map(|m| (m.len() as f64 * VRAM_OVERHEAD_MULTIPLIER) as u64)
-            .unwrap_or(0)
-    } else {
-        0
-    };
+                    .unwrap_or(0),
+                "Embedded model estimate".to_string(),
+            )
+        } else if compose_backend == "ollama_remote" {
+            match local_ollama_vram(&compose_ollama_url, &compose_ollama_model).await {
+                Some(bytes) => (bytes, "Local Ollama reported usage".to_string()),
+                None => (0, "Remote Ollama not measured".to_string()),
+            }
+        } else {
+            (0, "Processor".to_string())
+        };
+
+    let system_memory = crate::hardware_report::system_memory_bytes();
 
     match gpu_info::get_primary_gpu_vram_info() {
         Some(info) => {
@@ -507,8 +754,13 @@ pub async fn check_combined_vram(
                 gpu_detected: true,
                 adapter_name: Some(info.adapter_name),
                 dedicated_vram_bytes: Some(info.dedicated_vram_bytes),
+                gpu_current_usage_bytes: Some(info.current_usage_bytes),
+                gpu_available_vram_bytes: Some(info.available_vram_bytes),
+                system_memory_total_bytes: system_memory.map(|value| value.0),
+                system_memory_available_bytes: system_memory.map(|value| value.1),
                 whisper_estimate_bytes,
                 compose_estimate_bytes,
+                compose_memory_source,
                 total_usage_percent,
             })
         }
@@ -516,8 +768,13 @@ pub async fn check_combined_vram(
             gpu_detected: false,
             adapter_name: None,
             dedicated_vram_bytes: None,
+            gpu_current_usage_bytes: None,
+            gpu_available_vram_bytes: None,
+            system_memory_total_bytes: system_memory.map(|value| value.0),
+            system_memory_available_bytes: system_memory.map(|value| value.1),
             whisper_estimate_bytes,
             compose_estimate_bytes,
+            compose_memory_source,
             total_usage_percent: None,
         }),
     }

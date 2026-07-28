@@ -15,7 +15,7 @@ on:
       tag_name:
         description: "Tag to attach the release to (only used for manual runs, not tag pushes)"
         required: false
-        default: "v0.1.1"
+        default: "v0.2.0"
 
 jobs:
   build-windows:
@@ -125,6 +125,8 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -143,5 +145,5 @@ jobs:
         with:
           tag_name: ${{ github.event.inputs.tag_name || github.ref_name }}
           files: release-assets/*
-          generate_release_notes: true
+          body_path: .github/release-notes/v0.2.0.md
           fail_on_unmatched_files: true

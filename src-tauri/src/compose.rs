@@ -54,7 +54,8 @@ pub struct ComposeState {
 }
 
 pub type ComposeBuffer = Arc<Mutex<String>>;
-pub type ComposeBackendCache = Arc<Mutex<Option<voxbridge::LlmBackend>>>;
+type SharedComposeBackend = Arc<Mutex<voxbridge::LlmBackend>>;
+pub type ComposeBackendCache = Arc<Mutex<Option<SharedComposeBackend>>>;
 pub type ComposePendingState = Arc<Mutex<PendingBatch>>;
 pub type ComposeHistoryState = Arc<Mutex<ComposeHistory>>;
 
@@ -106,6 +107,12 @@ const MAX_HISTORY_BATCHES: usize = 50;
 /// Tracks the not-yet-corrected tail of the corrected buffer as a *batch* of utterances
 /// rather than one at a time, so the LLM gets a few sentences of real context/flow to
 /// work with instead of correcting each one in isolation.
+///
+/// The confirmed-prefix/revisable-tail design is independently implemented here and
+/// informed by LocalAgreement in Whisper-Streaming and SimulStreaming: Macháček,
+/// Dabre, and Bojar, "Turning Whisper into a Real-Time Transcription System"
+/// (IJCNLP-AACL 2023). Those MIT-licensed projects are credited in NOTICE.md; no source
+/// code from either project is incorporated here.
 #[derive(Default)]
 pub struct PendingBatch {
     /// Byte offset into the corrected buffer where this batch's uncorrected text begins.
@@ -115,6 +122,17 @@ pub struct PendingBatch {
     /// Bumped on every utterance; lets a scheduled debounce fire only if nothing newer
     /// has arrived to supersede it, without needing to explicitly cancel a tokio task.
     generation: u64,
+    /// Only one mutable-tail refinement may run at a time. New speech is coalesced in
+    /// this state and picked up by the same worker after its current snapshot finishes.
+    in_flight: bool,
+    /// Explicit whole-document rebuilds invalidate an older rolling snapshot. Ordinary
+    /// appended speech does not: a completed pass may still safely update its exact
+    /// unchanged source span while the new tail waits.
+    discard_before_generation: u64,
+    /// The generation of an explicit final/full-document pass. Rolling passes only
+    /// refine through the last complete sentence and leave the trailing fragment
+    /// unconfirmed; this generation is allowed to include that final fragment.
+    full_document_generation: Option<u64>,
 }
 
 /// `Config::compose_context_sentences` sentinel meaning "no cap - only ever fire on the
@@ -133,19 +151,32 @@ pub fn spawn_compose_preload(app_handle: AppHandle) {
     let config = { state.config.lock().unwrap().clone() };
 
     if config.output_method != crate::config::OutputMethod::Compose {
+        *state.compose_loading.lock().unwrap() = false;
+        let _ = app_handle.emit(
+            "compose-preload-status",
+            serde_json::json!({ "loading": false, "error": null }),
+        );
         return;
     }
 
     let backend_cache = state.compose_backend.clone();
+    let backend_generation = state.compose_backend_generation.clone();
+    let preload_generation = backend_generation.load(Ordering::SeqCst);
     {
         let guard = backend_cache.lock().unwrap();
         if guard.is_some() {
+            *state.compose_loading.lock().unwrap() = false;
+            let _ = app_handle.emit(
+                "compose-preload-status",
+                serde_json::json!({ "loading": false, "error": null }),
+            );
             return; // already loaded
         }
     }
 
     let compose_loading = state.compose_loading.clone();
     let compose_preload_error = state.compose_preload_error.clone();
+    let preload_cache: ComposeBackendCache = Arc::new(Mutex::new(None));
     *compose_loading.lock().unwrap() = true;
     *compose_preload_error.lock().unwrap() = None;
 
@@ -159,7 +190,12 @@ pub fn spawn_compose_preload(app_handle: AppHandle) {
         let mut prepared_config = config;
         let preparation = if prepared_config.compose_backend == "embedded" {
             let configured_path = std::path::Path::new(&prepared_config.compose_model_path);
-            if prepared_config.compose_model_path.trim().is_empty() || !configured_path.exists() {
+            if prepared_config.compose_model_path.trim().is_empty()
+                || !configured_path.exists()
+                || crate::app::commands::compose::uses_legacy_default_embedded_model(
+                    configured_path,
+                )
+            {
                 crate::log_info!("Compose: embedded model missing; downloading the default model");
                 crate::app::status::emit_status_to_frontend("Downloading Compose model").await;
                 crate::app::commands::compose::ensure_default_embedded_model()
@@ -182,6 +218,13 @@ pub fn spawn_compose_preload(app_handle: AppHandle) {
 
         let result = match preparation {
             Ok(()) => {
+                if backend_generation.load(Ordering::SeqCst) != preload_generation {
+                    crate::log_info!(
+                        "Compose: preload generation {} superseded before initialization",
+                        preload_generation
+                    );
+                    return;
+                }
                 crate::app::status::emit_status_to_frontend("Initializing refinement model").await;
                 {
                     let state = app_handle.state::<crate::AppState>();
@@ -194,18 +237,27 @@ pub fn spawn_compose_preload(app_handle: AppHandle) {
                 } else {
                     let _ = app_handle.emit("config-updated", prepared_config.clone());
                     let app_handle_for_blocking = app_handle.clone();
+                    let preload_cache_for_blocking = preload_cache.clone();
                     crate::app::status::emit_status_to_frontend("Warming refinement model").await;
                     match tokio::task::spawn_blocking(move || {
                         ensure_backend_loaded(
-                            &backend_cache,
+                            &preload_cache_for_blocking,
                             &prepared_config,
                             &app_handle_for_blocking,
                         )?;
-                        let guard = backend_cache.lock().unwrap();
-                        let backend = guard.as_ref().ok_or("Compose backend not loaded")?;
+                        let backend = preload_cache_for_blocking
+                            .lock()
+                            .unwrap()
+                            .as_ref()
+                            .cloned()
+                            .ok_or("Compose backend not loaded")?;
                         // Throwaway completion to force the model resident and any one-time
                         // GPU shader compilation to happen now, not on the user's first real use.
-                        backend.complete(Some(WARMUP_PROMPT), "warm up.", 8)
+                        let result = backend
+                            .lock()
+                            .unwrap()
+                            .complete(Some(WARMUP_PROMPT), "warm up.", 8);
+                        result
                     })
                     .await
                     {
@@ -217,8 +269,17 @@ pub fn spawn_compose_preload(app_handle: AppHandle) {
             Err(error) => Err(error),
         };
 
+        if backend_generation.load(Ordering::SeqCst) != preload_generation {
+            crate::log_info!(
+                "Compose: preload generation {} completed after being superseded; discarding it",
+                preload_generation
+            );
+            return;
+        }
+
         let error = match result {
             Ok(_) => {
+                *backend_cache.lock().unwrap() = preload_cache.lock().unwrap().take();
                 crate::log_info!("Compose: backend preloaded and warmed up");
                 None
             }
@@ -231,9 +292,18 @@ pub fn spawn_compose_preload(app_handle: AppHandle) {
         *compose_preload_error.lock().unwrap() = error.clone();
         let _ = app_handle.emit(
             "compose-preload-status",
-            serde_json::json!({ "loading": false, "error": error }),
+            serde_json::json!({ "loading": false, "error": error.clone() }),
         );
-        crate::app::status::emit_status_to_frontend("Ready").await;
+        let recording = {
+            let state = app_handle.state::<crate::AppState>();
+            let active = *state.is_recording.lock().unwrap();
+            active
+        };
+        crate::app::status::emit_status_to_frontend(if recording { "Recording" } else { "Ready" }).await;
+
+        if error.is_none() {
+            rerun_after_backend_preload(&app_handle, preload_generation);
+        }
     });
 }
 
@@ -306,14 +376,69 @@ fn ensure_backend_loaded(
         voxbridge::LlmBackend::Embedded(model)
     };
 
-    *cache.lock().unwrap() = Some(backend);
+    *cache.lock().unwrap() = Some(Arc::new(Mutex::new(backend)));
     Ok(())
 }
 
 /// Drops any cached backend so the next call reloads from current config - used when
 /// Compose-relevant settings change (backend, model, GPU toggle) while the app is running.
-pub fn invalidate_backend(cache: &ComposeBackendCache) {
+pub fn invalidate_backend(cache: &ComposeBackendCache, generation: &Arc<AtomicU64>) {
+    generation.fetch_add(1, Ordering::SeqCst);
     *cache.lock().unwrap() = None;
+}
+
+fn rerun_after_backend_preload(app_handle: &AppHandle, generation: u64) {
+    use tauri::Manager;
+    let state = app_handle.state::<crate::AppState>();
+    if state.compose_backend_generation.load(Ordering::SeqCst) != generation
+        || !state.compose_rerun_after_preload.swap(false, Ordering::SeqCst)
+    {
+        return;
+    }
+
+    rerun_current_document(app_handle);
+}
+
+/// Rebuilds the refined document from the complete raw transcript with the current
+/// backend and agent settings. This is deliberately one whole-document job: replaying
+/// every overlapping contribution-history batch can saturate the model, mutate stale
+/// offsets, and leave the visible document waiting behind work that is no longer useful.
+pub fn rerun_current_document(app_handle: &AppHandle) {
+    use tauri::Manager;
+    let state = app_handle.state::<crate::AppState>();
+    // Finalization should build on the rolling refined document. Replacing it with
+    // the untouched raw transcript here discarded useful sentence and paragraph
+    // structure that had already landed during recording.
+    let current_text = state.compose_buffer.lock().unwrap().clone();
+    if current_text.trim().is_empty() {
+        return;
+    }
+
+    {
+        let mut pending = state.compose_pending.lock().unwrap();
+        pending.start = 0;
+        pending.count = 1;
+        pending.generation += 1;
+        pending.discard_before_generation = pending.generation;
+        pending.full_document_generation = Some(pending.generation);
+    }
+    clear_history(&state.compose_history);
+    emit_state(
+        app_handle,
+        &state.compose_buffer,
+        &state.compose_raw_buffer,
+        true,
+        None,
+    );
+    spawn_pending_correction(
+        state.compose_buffer.clone(),
+        state.compose_raw_buffer.clone(),
+        state.compose_pending.clone(),
+        state.compose_history.clone(),
+        state.compose_backend.clone(),
+        state.config.clone(),
+        app_handle.clone(),
+    );
 }
 
 /// Capitalizes the first letter of the text and the first letter after every `.`/`?`/`!`
@@ -340,6 +465,41 @@ fn capitalize_sentence_starts(text: &str) -> String {
     result
 }
 
+fn collapse_adjacent_duplicate_words(text: &str) -> String {
+    let mut result: Vec<&str> = Vec::new();
+    let mut previous_normalized = String::new();
+    let mut previous_ended_sentence = false;
+    for token in text.split_whitespace() {
+        let normalized: String = token
+            .chars()
+            .filter(|character| character.is_alphanumeric())
+            .collect::<String>()
+            .to_lowercase();
+        if !normalized.is_empty()
+            && normalized == previous_normalized
+            && !previous_ended_sentence
+        {
+            continue;
+        }
+        previous_ended_sentence = token.ends_with(['.', '!', '?']);
+        previous_normalized = normalized;
+        result.push(token);
+    }
+    result.join(" ")
+}
+
+fn preserve_boundary_whitespace(source: &str, replacement: &str) -> String {
+    let leading = source.len() - source.trim_start().len();
+    let trailing = source.len() - source.trim_end().len();
+    let mut result = String::with_capacity(leading + replacement.len() + trailing);
+    result.push_str(&source[..leading]);
+    result.push_str(replacement.trim());
+    if trailing > 0 && source.len() >= trailing {
+        result.push_str(&source[source.len() - trailing..]);
+    }
+    result
+}
+
 /// Splits text into a lowercase, punctuation-stripped word multiset (a frequency count,
 /// not a sequence) so word order changes from sentence-splitting don't register as edits.
 fn word_multiset(text: &str) -> std::collections::HashMap<String, i32> {
@@ -352,6 +512,254 @@ fn word_multiset(text: &str) -> std::collections::HashMap<String, i32> {
         *map.entry(normalized.to_lowercase()).or_insert(0) += 1;
     }
     map
+}
+
+fn normalized_words(text: &str) -> Vec<String> {
+    text.split_whitespace()
+        .map(|word| {
+            word.chars()
+                .filter(|character| character.is_alphanumeric())
+                .collect::<String>()
+                .to_lowercase()
+        })
+        .filter(|word| !word.is_empty())
+        .collect()
+}
+
+/// Repeating a phrase that appeared only once in the source is never a legitimate
+/// cleanup, regardless of how permissive the user's fidelity threshold is.
+fn introduces_repeated_phrase(raw: &str, corrected: &str) -> bool {
+    const PHRASE_WORDS: usize = 4;
+    fn counts(words: &[String]) -> std::collections::HashMap<String, usize> {
+        let mut result = std::collections::HashMap::new();
+        for phrase in words.windows(PHRASE_WORDS) {
+            *result.entry(phrase.join("\u{1f}")).or_insert(0) += 1;
+        }
+        result
+    }
+
+    let raw_counts = counts(&normalized_words(raw));
+    counts(&normalized_words(corrected))
+        .into_iter()
+        .any(|(phrase, count)| count >= 2 && count > *raw_counts.get(&phrase).unwrap_or(&0))
+}
+
+fn copies_read_only_context(input: &str, context: &str, corrected: &str) -> bool {
+    const PHRASE_WORDS: usize = 5;
+    let input_words = normalized_words(input);
+    let context_words = normalized_words(context);
+    let corrected_words = normalized_words(corrected);
+    if context_words.len() < PHRASE_WORDS || corrected_words.len() < PHRASE_WORDS {
+        return false;
+    }
+
+    let input_phrases: std::collections::HashSet<String> = input_words
+        .windows(PHRASE_WORDS)
+        .map(|words| words.join("\u{1f}"))
+        .collect();
+    let context_only_phrases: std::collections::HashSet<String> = context_words
+        .windows(PHRASE_WORDS)
+        .map(|words| words.join("\u{1f}"))
+        .filter(|phrase| !input_phrases.contains(phrase))
+        .collect();
+    let copied_phrase = corrected_words
+        .windows(PHRASE_WORDS)
+        .map(|words| words.join("\u{1f}"))
+        .any(|phrase| context_only_phrases.contains(&phrase));
+    if copied_phrase {
+        return true;
+    }
+
+    // A small model can also lift a few context words while changing their spacing or
+    // dropping intervening words, evading the contiguous-phrase check. Count corrected
+    // words that were not available in the editable input but do occur in read-only
+    // context; three such borrowed tokens are enough to make the edit unsafe.
+    let mut remaining_input = word_multiset(input);
+    let context_counts = word_multiset(context);
+    let mut borrowed = 0;
+    for word in corrected_words {
+        if let Some(remaining) = remaining_input.get_mut(&word) {
+            if *remaining > 0 {
+                *remaining -= 1;
+                continue;
+            }
+        }
+        if context_counts.contains_key(&word) {
+            borrowed += 1;
+            if borrowed >= 3 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn moves_late_source_phrase_to_front(source: &str, corrected: &str) -> bool {
+    const PHRASE_WORDS: usize = 3;
+    let source_words = normalized_words(source);
+    let corrected_words = normalized_words(corrected);
+    if source_words.len() < PHRASE_WORDS || corrected_words.len() < PHRASE_WORDS {
+        return false;
+    }
+    let corrected_opening = &corrected_words[..PHRASE_WORDS];
+    if source_words[..PHRASE_WORDS] == *corrected_opening {
+        return false;
+    }
+    source_words
+        .windows(PHRASE_WORDS)
+        .position(|phrase| phrase == corrected_opening)
+        .is_some_and(|position| position >= 8)
+}
+
+fn leaks_prompt_markup(corrected: &str) -> bool {
+    let normalized = corrected.to_ascii_lowercase();
+    normalized.contains("<transcript")
+        || normalized.contains("</transcript")
+        || normalized.contains("<context")
+        || normalized.contains("</context")
+        || normalized.contains("the text you must correct and return")
+}
+
+/// Removes conversational lead-ins that small instruction models sometimes add even
+/// when asked to return only the edited transcript. Never remove the phrase when it was
+/// actually present at the start of the dictated source.
+fn strip_editorial_wrapper(source: &str, corrected: &str) -> String {
+    const WRAPPERS: &[&str] = &[
+        "here is the corrected text:",
+        "here's the corrected text:",
+        "corrected text:",
+        "here is the revised text:",
+        "here's the revised text:",
+        "revised text:",
+    ];
+
+    let mut trimmed = corrected.trim();
+    let lowered = trimmed.to_ascii_lowercase();
+    if lowered.starts_with("<transcript>") && lowered.ends_with("</transcript>") {
+        trimmed = trimmed["<transcript>".len()..trimmed.len() - "</transcript>".len()].trim();
+    }
+    let source_lower = source.trim_start().to_ascii_lowercase();
+    let corrected_lower = trimmed.to_ascii_lowercase();
+    for wrapper in WRAPPERS {
+        if corrected_lower.starts_with(wrapper) && !source_lower.starts_with(wrapper) {
+            return trimmed[wrapper.len()..].trim_start().to_string();
+        }
+    }
+    trimmed.to_string()
+}
+
+fn collapses_paragraphs(source: &str, corrected: &str) -> bool {
+    let source_breaks = source.matches("\n\n").count();
+    let corrected_breaks = corrected.matches("\n\n").count();
+    source_breaks >= 1 && corrected_breaks == 0
+}
+
+/// Rejects an edit that silently removes a complete, meaningful source sentence.
+/// Whole-document fidelity can remain deceptively high when one short sentence is
+/// dropped from an otherwise unchanged block, so each sentence needs its own coverage
+/// check as well.
+fn drops_source_sentence(source: &str, corrected: &str) -> bool {
+    let corrected_words = word_multiset(corrected);
+    source
+        .split_inclusive(['.', '?', '!'])
+        .filter(|sentence| sentence.trim_end().ends_with(['.', '?', '!']))
+        .any(|sentence| {
+            let source_words = word_multiset(sentence);
+            let source_total: i32 = source_words.values().sum();
+            if source_total < 4 {
+                return false;
+            }
+            let retained: i32 = source_words
+                .iter()
+                .map(|(word, count)| corrected_words.get(word).copied().unwrap_or(0).min(*count))
+                .sum();
+            retained as f64 / (source_total as f64) < 0.70
+        })
+}
+
+fn has_malformed_word_joins(text: &str) -> bool {
+    let chars: Vec<char> = text.chars().collect();
+    chars.windows(2).any(|pair| {
+        (pair[0].is_lowercase() && pair[1].is_uppercase())
+            || (matches!(pair[0], '.' | '?' | '!' | ',') && pair[1].is_alphabetic())
+    })
+}
+
+/// Rejects new tiny sentence fragments introduced by refinement. These are usually
+/// punctuation mistakes at a streaming chunk boundary rather than intentional prose.
+fn introduces_short_sentence_fragment(source: &str, corrected: &str) -> bool {
+    fn short_sentence_count(text: &str) -> usize {
+        text.split_inclusive(['.', '?', '!'])
+            .filter(|sentence| sentence.trim_end().ends_with(['.', '?', '!']))
+            .filter(|sentence| {
+                let word_count = normalized_words(sentence).len();
+                (1..=2).contains(&word_count)
+            })
+            .count()
+    }
+
+    short_sentence_count(corrected) > short_sentence_count(source)
+}
+
+/// Hard safety check for clause shuffling. The ordinary fidelity score ignores order
+/// so punctuation and sentence-boundary edits do not look destructive; this separate
+/// longest-common-subsequence score catches a model that keeps similar vocabulary but
+/// moves or replaces whole clauses.
+fn ordered_word_fidelity(source: &str, corrected: &str) -> f64 {
+    let source_words = normalized_words(source);
+    let corrected_words = normalized_words(corrected);
+    if source_words.is_empty() {
+        return 1.0;
+    }
+    let source_words = &source_words[..source_words.len().min(2048)];
+    let corrected_words = &corrected_words[..corrected_words.len().min(2048)];
+    let mut previous = vec![0_u16; corrected_words.len() + 1];
+    let mut current = vec![0_u16; corrected_words.len() + 1];
+    for source_word in source_words {
+        for (index, corrected_word) in corrected_words.iter().enumerate() {
+            current[index + 1] = if source_word == corrected_word {
+                previous[index].saturating_add(1)
+            } else {
+                current[index].max(previous[index + 1])
+            };
+        }
+        std::mem::swap(&mut previous, &mut current);
+        current.fill(0);
+    }
+    previous[corrected_words.len()] as f64 / source_words.len() as f64
+}
+
+fn add_paragraph_breaks_to_long_block(text: &str) -> String {
+    if text.contains("\n\n") || text.split_whitespace().count() < 80 {
+        return text.to_string();
+    }
+
+    let chars: Vec<char> = text.chars().collect();
+    let mut result = String::with_capacity(text.len() + 8);
+    let mut sentences = 0_u8;
+    let mut paragraph_break_pending = false;
+    for (index, character) in chars.iter().copied().enumerate() {
+        if paragraph_break_pending && character.is_whitespace() {
+            if !result.ends_with("\n\n") {
+                result.push_str("\n\n");
+            }
+            paragraph_break_pending = false;
+            continue;
+        }
+        result.push(character);
+        if matches!(character, '.' | '?' | '!')
+            && !chars
+                .get(index + 1)
+                .is_some_and(|next| matches!(next, '.' | '?' | '!'))
+        {
+            sentences += 1;
+            if sentences >= 4 {
+                sentences = 0;
+                paragraph_break_pending = true;
+            }
+        }
+    }
+    result
 }
 
 /// The alphanumeric-only, lowercase, whitespace/punctuation-stripped character
@@ -443,12 +851,18 @@ pub fn append_and_correct(
     config: Arc<Mutex<Config>>,
     app_handle: AppHandle,
 ) {
+    let raw_text = raw_text.replace("[BLANK_AUDIO]", "");
+    let raw_text = raw_text.trim().to_string();
+    if raw_text.is_empty() {
+        return;
+    }
+
     {
         let mut raw_buf = raw_buffer.lock().unwrap();
         if !raw_buf.is_empty() && !raw_buf.ends_with(' ') {
             raw_buf.push(' ');
         }
-        raw_buf.push_str(raw_text.trim());
+        raw_buf.push_str(&raw_text);
     }
 
     let (context_sentences, pause_only, debounce_ms) = {
@@ -459,24 +873,47 @@ pub fn append_and_correct(
             latency_debounce_ms(&cfg.compose_edit_latency),
         )
     };
-    let (batch_start, batch_count, my_generation) = {
+    let (batch_count, my_generation) = {
         let mut buf = buffer.lock().unwrap();
         if !buf.is_empty() && !buf.ends_with(' ') {
             buf.push(' ');
         }
         let mut p = pending.lock().unwrap();
-        if p.count == 0 {
+        if p.count == 0 && p.start >= buf.len() {
             // Include editable overlap from the already-composed text. Later speech
             // often explicitly corrects an earlier recognition error ("I said test,
             // not dust"); read-only reference context cannot repair that earlier word.
-            // Everything revisits the full current document, while finite settings
-            // revisit the requested number of recent sentence boundaries.
-            p.start = editable_context_start(&buf, context_sentences);
+            // Live passes revisit a bounded recent passage while the earlier document
+            // remains available as read-only context. The explicit stop-time pass is
+            // responsible for revisiting the full refined document.
+            //
+            // Do not move this boundary forward merely because an inference was
+            // launched. If that pass is superseded by newer speech, its unresolved
+            // opening text must remain part of the next pass until a result actually
+            // lands.
+            let live_edit_sentences = if context_sentences == CONTEXT_UNLIMITED {
+                3
+            } else {
+                context_sentences.clamp(1, 6)
+            };
+            p.start = editable_context_start(&buf, live_edit_sentences);
         }
-        buf.push_str(raw_text.trim());
+        // The refined pane should never visibly regress to an uncapitalized raw
+        // sentence while an asynchronous agent pass is pending or superseded by newer
+        // speech. Keep the raw pane exact, but apply the deterministic sentence-start
+        // cleanup immediately to newly appended refined text.
+        let cleaned_raw = collapse_adjacent_duplicate_words(&raw_text);
+        let begins_sentence = buf.trim_end().is_empty()
+            || buf.trim_end().ends_with(['.', '?', '!', '\n']);
+        let immediate_cleanup = if begins_sentence {
+            capitalize_sentence_starts(&cleaned_raw)
+        } else {
+            cleaned_raw
+        };
+        buf.push_str(&immediate_cleanup);
         p.count += 1;
         p.generation += 1;
-        (p.start, p.count, p.generation)
+        (p.count, p.generation)
     };
     emit_state(&app_handle, &buffer, &raw_buffer, true, None);
 
@@ -485,11 +922,15 @@ pub fn append_and_correct(
         && batch_count >= context_sentences as usize;
 
     if fire_now {
-        {
-            let mut p = pending.lock().unwrap();
-            p.count = 0;
-        }
-        spawn_correction(batch_start, buffer, raw_buffer, pending, history, backend_cache, config, app_handle);
+        spawn_pending_correction(
+            buffer,
+            raw_buffer,
+            pending,
+            history,
+            backend_cache,
+            config,
+            app_handle,
+        );
         return;
     }
 
@@ -500,16 +941,23 @@ pub fn append_and_correct(
         tokio::time::sleep(std::time::Duration::from_millis(debounce_ms)).await;
 
         let should_fire = {
-            let mut p = pending.lock().unwrap();
+            let p = pending.lock().unwrap();
             if p.generation == my_generation && p.count > 0 {
-                p.count = 0;
                 true
             } else {
                 false
             }
         };
         if should_fire {
-            spawn_correction(batch_start, buffer, raw_buffer, pending, history, backend_cache, config, app_handle);
+            spawn_pending_correction(
+                buffer,
+                raw_buffer,
+                pending,
+                history,
+                backend_cache,
+                config,
+                app_handle,
+            );
         }
     });
 }
@@ -534,12 +982,28 @@ fn editable_context_start(text: &str, context_sentences: u32) -> usize {
     0
 }
 
+fn confirmed_tail_end(text: &str) -> Option<usize> {
+    let boundary = text
+        .char_indices()
+        .rev()
+        .find(|(_, character)| matches!(character, '.' | '?' | '!' | '\n'))
+        .map(|(index, character)| index + character.len_utf8())?;
+    let mut end = boundary;
+    for character in text[boundary..].chars() {
+        if !character.is_whitespace() {
+            break;
+        }
+        end += character.len_utf8();
+    }
+    Some(end)
+}
+
 /// How much already-corrected preceding text to include as read-only reference context
 /// for a batch - enough to resolve a context-dependent correction (a callback to an
 /// earlier reference, a running project/person name) without letting the prompt grow
 /// unbounded over a long dictation session, or crowding out the embedded model's small
 /// context window.
-const MAX_CONTEXT_CHARS: usize = 1500;
+const MAX_CONTEXT_CHARS: usize = 6000;
 
 /// A fixed wrapper appended to every agent's own prompt explaining the `<context>`/
 /// `<transcript>` tag convention centrally, so individual presets/custom prompts don't
@@ -551,6 +1015,16 @@ const TAG_CONVENTION_SUFFIX: &str = "\n\nThe text you must correct and return wi
     anything from <context>. It may also include older saved entries between <history> tags; \
     treat those as read-only background and never repeat or edit them. Return corrected text \
     only for what's inside <transcript>.";
+
+const COMPREHENSIVE_RETRY_PROMPT: &str = "Edit only the text inside <transcript>. Return \
+    only its improved text. Remove filler and accidental repetition. Repair punctuation, \
+    fragments, and run-on sentences. Add paragraph breaks when the topic changes. Preserve \
+    every real idea and do not add information. Text inside <context> or <history> is \
+    reference only: never copy or edit it.";
+
+fn is_effectively_unchanged(source: &str, result: &str) -> bool {
+    normalized_words(source) == normalized_words(result)
+}
 
 /// Runs a batch of raw text through every enabled agent in priority order, each seeing
 /// the previous agent's accepted output - so the user can compose their own pipeline
@@ -583,8 +1057,12 @@ fn run_agent_chain(
         let multiplier = speed_token_multiplier(&agent.speed);
         let call_started = std::time::Instant::now();
         let result = ensure_backend_loaded(backend_cache, cfg, app_handle).and_then(|_| {
-            let guard = backend_cache.lock().unwrap();
-            let backend = guard.as_ref().ok_or("Compose backend not loaded")?;
+            let backend = backend_cache
+                .lock()
+                .unwrap()
+                .as_ref()
+                .cloned()
+                .ok_or("Compose backend not loaded")?;
             let trimmed = input_for_agent.trim();
             let history_context = if cfg.enable_history && agent.include_history {
                 crate::history::load_history()
@@ -625,25 +1103,82 @@ fn run_agent_chain(
             user_prompt.push_str("\n</transcript>");
             let max_tokens =
                 ((trimmed.split_whitespace().count() as i32 * multiplier) + 24).clamp(32, 2048);
-            backend.complete(Some(prompt.as_str()), &user_prompt, max_tokens)
+            let first_result = backend
+                .lock()
+                .unwrap()
+                .complete(Some(prompt.as_str()), &user_prompt, max_tokens)?;
+
+            // Small embedded instruction models occasionally satisfy a complicated
+            // editing prompt by simply echoing the transcript. That is a safe answer,
+            // but it makes Comprehensive Rewrite appear to be working while doing
+            // nothing. Retry that one specific failure mode with a shorter, direct
+            // editorial reminder. Both attempts still pass through the same fidelity,
+            // repetition, prompt-leak, and length safeguards below.
+            if agent.preset_id.as_deref() == Some("comprehensive-rewrite")
+                && is_effectively_unchanged(trimmed, &first_result)
+            {
+                crate::log_info!(
+                    "Compose: agent '{}' echoed the source; retrying comprehensive edit",
+                    agent.name
+                );
+                backend
+                    .lock()
+                    .unwrap()
+                    .complete(Some(COMPREHENSIVE_RETRY_PROMPT), &user_prompt, max_tokens)
+            } else {
+                Ok(first_result)
+            }
         });
         COMPOSE_AGENT_RUNS.fetch_add(1, Ordering::Relaxed);
         COMPOSE_MS_TOTAL.fetch_add(call_started.elapsed().as_millis() as u64, Ordering::Relaxed);
 
         match result {
             Ok(reply) => {
-                let reply_trimmed = reply.trim().to_string();
                 let raw_trimmed = input_for_agent.trim();
+                let reply_trimmed = strip_editorial_wrapper(raw_trimmed, &reply);
                 let ballooned =
                     reply_trimmed.len() as f64 > (raw_trimmed.len() as f64 * 1.6 + 60.0);
                 let fidelity = word_fidelity(raw_trimmed, &reply_trimmed);
                 let reworded = fidelity < agent.min_fidelity;
-                if ballooned || reworded {
+                let repeated = introduces_repeated_phrase(raw_trimmed, &reply_trimmed);
+                let prompt_leak = leaks_prompt_markup(&reply_trimmed);
+                let collapsed_paragraphs = collapses_paragraphs(raw_trimmed, &reply_trimmed);
+                let dropped_sentence = drops_source_sentence(raw_trimmed, &reply_trimmed);
+                let malformed_joins = has_malformed_word_joins(&reply_trimmed);
+                let short_fragment =
+                    introduces_short_sentence_fragment(raw_trimmed, &reply_trimmed);
+                let ordered_fidelity = ordered_word_fidelity(raw_trimmed, &reply_trimmed);
+                let reordered = ordered_fidelity < 0.72;
+                let copied_context =
+                    copies_read_only_context(raw_trimmed, context_text, &reply_trimmed);
+                let moved_late_opening =
+                    moves_late_source_phrase_to_front(raw_trimmed, &reply_trimmed);
+                if ballooned
+                    || reworded
+                    || repeated
+                    || prompt_leak
+                    || collapsed_paragraphs
+                    || dropped_sentence
+                    || malformed_joins
+                    || short_fragment
+                    || reordered
+                    || copied_context
+                    || moved_late_opening
+                {
                     COMPOSE_REJECTED.fetch_add(1, Ordering::Relaxed);
                     crate::log_info!(
-                        "Compose: agent '{}' rejected (word fidelity {:.2})\n  raw:   {}\n  reply: {}",
+                        "Compose: agent '{}' rejected (word fidelity {:.2}, ordered fidelity {:.2}, repeated={}, prompt_leak={}, collapsed_paragraphs={}, dropped_sentence={}, malformed_joins={}, short_fragment={}, copied_context={}, moved_late_opening={})\n  raw:   {}\n  reply: {}",
                         agent.name,
                         fidelity,
+                        ordered_fidelity,
+                        repeated,
+                        prompt_leak,
+                        collapsed_paragraphs,
+                        dropped_sentence,
+                        malformed_joins,
+                        short_fragment,
+                        copied_context,
+                        moved_late_opening,
                         raw_trimmed,
                         reply_trimmed
                     );
@@ -653,14 +1188,21 @@ fn run_agent_chain(
                         text: reply_trimmed,
                         accepted: false,
                         note: Some(format!(
-                            "Rejected: drifted too far from the input (word fidelity {:.2})",
-                            fidelity
+                            "Rejected by output safeguards (word fidelity {:.2})",
+                            fidelity,
                         )),
                         fidelity,
                     });
                 } else {
                     COMPOSE_ACCEPTED.fetch_add(1, Ordering::Relaxed);
-                    let final_text = capitalize_sentence_starts(&reply_trimmed);
+                    let capitalized = capitalize_sentence_starts(&reply_trimmed);
+                    let final_text = if agent.preset_id.as_deref()
+                        == Some("comprehensive-rewrite")
+                    {
+                        add_paragraph_breaks_to_long_block(&capitalized)
+                    } else {
+                        capitalized
+                    };
                     crate::log_info!(
                         "Compose: agent '{}' accepted (word fidelity {:.2})\n  raw:   {}\n  final: {}",
                         agent.name,
@@ -702,8 +1244,7 @@ fn run_agent_chain(
 /// patches only that span - the raw pane is never touched, so there's always an honest
 /// "what was actually said" reference next to "what Compose changed it to." Records the
 /// full per-agent history for that batch so it can be reviewed or reverted later.
-fn spawn_correction(
-    batch_start: usize,
+fn spawn_pending_correction(
     buffer: ComposeBuffer,
     raw_buffer: ComposeBuffer,
     pending: ComposePendingState,
@@ -712,12 +1253,54 @@ fn spawn_correction(
     config: Arc<Mutex<Config>>,
     app_handle: AppHandle,
 ) {
+    use tauri::Manager;
+    let (batch_start, document_generation) = {
+        let mut pending_state = pending.lock().unwrap();
+        if pending_state.in_flight || pending_state.count == 0 {
+            return;
+        }
+        pending_state.in_flight = true;
+        pending_state.count = 0;
+        (pending_state.start, pending_state.generation)
+    };
+    // A provider switch or newly appended utterance can supersede this document
+    // snapshot while inference is still running. Track the pending-document revision
+    // as well as the backend generation so an older full-document pass can never patch
+    // over newer speech or seed the next pass with duplicated text.
+    let correction_generation = app_handle
+        .state::<crate::AppState>()
+        .compose_backend_generation
+        .load(Ordering::SeqCst);
+    let full_document_pass = pending.lock().unwrap().full_document_generation
+        == Some(document_generation);
     let (batch_raw_text, context_text) = {
         let buf = buffer.lock().unwrap();
         if batch_start > buf.len() {
+            let buffer_len = buf.len();
+            drop(buf);
+            let mut pending_state = pending.lock().unwrap();
+            pending_state.in_flight = false;
+            pending_state.count = 0;
+            pending_state.start = buffer_len;
+            drop(pending_state);
+            emit_state(&app_handle, &buffer, &raw_buffer, false, None);
             return;
         }
-        let batch_raw_text = buf[batch_start..].to_string();
+        let available = &buf[batch_start..];
+        let relative_end = if full_document_pass {
+            available.len()
+        } else if let Some(end) = confirmed_tail_end(available) {
+            end
+        } else {
+            drop(buf);
+            let mut pending_state = pending.lock().unwrap();
+            pending_state.in_flight = false;
+            pending_state.count = 0;
+            drop(pending_state);
+            emit_state(&app_handle, &buffer, &raw_buffer, false, None);
+            return;
+        };
+        let batch_raw_text = available[..relative_end].to_string();
         // Recent already-corrected text as read-only reference context, so a
         // context-dependent correction (a name, a running reference, a callback to
         // something said earlier) has something to resolve against even though this
@@ -736,6 +1319,10 @@ fn spawn_correction(
         (batch_raw_text, context_text)
     };
     if batch_raw_text.trim().is_empty() {
+        let buffer_len = buffer.lock().unwrap().len();
+        let mut pending_state = pending.lock().unwrap();
+        pending_state.in_flight = false;
+        pending_state.start = buffer_len;
         return;
     }
 
@@ -746,6 +1333,7 @@ fn spawn_correction(
         let app_handle_for_blocking = app_handle.clone();
         let buffer_for_blocking = buffer.clone();
         let raw_buffer_for_blocking = raw_buffer.clone();
+        let backend_for_blocking = backend_cache.clone();
         let agents = cfg.compose_agents.clone();
 
         let (final_text, stages) = tokio::task::spawn_blocking(move || {
@@ -753,7 +1341,7 @@ fn spawn_correction(
                 &batch_raw_for_blocking,
                 &context_for_blocking,
                 &agents,
-                &backend_cache,
+                &backend_for_blocking,
                 &cfg,
                 &app_handle_for_blocking,
                 &buffer_for_blocking,
@@ -766,17 +1354,84 @@ fn spawn_correction(
             (batch_raw_text.trim().to_string(), Vec::new())
         });
 
+        let current_generation = app_handle
+            .state::<crate::AppState>()
+            .compose_backend_generation
+            .load(Ordering::SeqCst);
+        if current_generation != correction_generation {
+            crate::log_info!(
+                "Compose: discarded correction from backend generation {} after switch to {}",
+                correction_generation,
+                current_generation
+            );
+            let still_pending = {
+                let mut pending_state = pending.lock().unwrap();
+                pending_state.in_flight = false;
+                pending_state.count > 0
+            };
+            emit_state(&app_handle, &buffer, &raw_buffer, still_pending, None);
+            if still_pending {
+                spawn_pending_correction(
+                    buffer,
+                    raw_buffer,
+                    pending,
+                    history,
+                    backend_cache,
+                    config,
+                    app_handle,
+                );
+            }
+            return;
+        }
+
+        let discard_result = pending.lock().unwrap().discard_before_generation > document_generation;
+        let mut applied = false;
+        let mut applied_text_len = final_text.len();
         {
             let mut buf = buffer.lock().unwrap();
-            // Only patch if this batch's span is still exactly what we sent (no newer
-            // batch already started past it while we were correcting) - otherwise leave
-            // the raw text alone rather than corrupt a later edit.
-            if batch_start <= buf.len() {
-                let after_is_ours = buf[batch_start..].trim() == batch_raw_text.trim();
-                if after_is_ours {
-                    buf.replace_range(batch_start.., &final_text);
+            // Patch only the exact snapshot this job processed. Newer speech may have
+            // been appended after it; preserve that live tail instead of discarding a
+            // useful rewrite or replacing the entire document. If another correction
+            // already changed this same span, the prefix no longer matches and this
+            // stale result is safely ignored.
+            if !discard_result && batch_start <= buf.len() {
+                let snapshot_end = batch_start + batch_raw_text.len();
+                let snapshot_is_ours = snapshot_end <= buf.len()
+                    && buf.is_char_boundary(batch_start)
+                    && buf.is_char_boundary(snapshot_end)
+                    && buf[batch_start..snapshot_end] == batch_raw_text;
+                if snapshot_is_ours {
+                    let replacement =
+                        preserve_boundary_whitespace(&batch_raw_text, &final_text);
+                    applied_text_len = replacement.len();
+                    buf.replace_range(batch_start..snapshot_end, &replacement);
+                    applied = true;
                 }
             }
+        }
+
+        if discard_result {
+            crate::log_info!(
+                "Compose: discarded rolling generation {} after a newer full-document rebuild was requested",
+                document_generation
+            );
+        } else if applied {
+            let confirmed_end = batch_start + applied_text_len;
+            let mut pending_state = pending.lock().unwrap();
+            if pending_state.generation == document_generation && pending_state.count == 0 {
+                pending_state.start = confirmed_end;
+            } else {
+                crate::log_info!(
+                    "Compose: spliced generation {} rewrite while newer speech remained queued at generation {}",
+                    document_generation,
+                    pending_state.generation
+                );
+            }
+        } else if pending.lock().unwrap().generation != document_generation {
+            crate::log_info!(
+                "Compose: skipped generation {} rewrite because its source span had already changed",
+                document_generation
+            );
         }
 
         {
@@ -786,7 +1441,7 @@ fn spawn_correction(
             hist.batches.push(BatchRecord {
                 id,
                 start: batch_start,
-                end: batch_start + final_text.len(),
+                end: batch_start + applied_text_len,
                 raw_text: batch_raw_text.trim().to_string(),
                 stages,
             });
@@ -796,8 +1451,39 @@ fn spawn_correction(
             }
         }
 
-        let still_pending = pending.lock().unwrap().count > 0;
+        let still_pending = {
+            let mut pending_state = pending.lock().unwrap();
+            pending_state.in_flight = false;
+            if pending_state.full_document_generation == Some(document_generation) {
+                pending_state.full_document_generation = None;
+            }
+            pending_state.count > 0
+        };
         emit_state(&app_handle, &buffer, &raw_buffer, still_pending, None);
+        if still_pending {
+            spawn_pending_correction(
+                buffer,
+                raw_buffer,
+                pending,
+                history,
+                backend_cache,
+                config,
+                app_handle,
+            );
+            return;
+        }
+        if !still_pending {
+            let recording = {
+                let state = app_handle.state::<crate::AppState>();
+                let is_recording = *state.is_recording.lock().unwrap();
+                is_recording
+            };
+            if !recording {
+                tauri::async_runtime::spawn(async {
+                    crate::app::status::emit_status_to_frontend("Ready").await;
+                });
+            }
+        }
     });
 }
 
@@ -861,143 +1547,6 @@ pub fn revert_batch(
     Ok(())
 }
 
-/// What a batch's text looked like right before the stage at `position` ran - walks the
-/// real (not hypothetical) accept/reject decisions up to that point. Used as the actual
-/// input handed to a re-run starting partway through the chain.
-fn effective_output_before(batch: &BatchRecord, position: usize) -> String {
-    let mut current = batch.raw_text.clone();
-    for stage in batch.stages.iter().take(position) {
-        if stage.accepted {
-            current = stage.text.clone();
-        }
-    }
-    current
-}
-
-/// Live-tunes the fidelity slider for real: re-runs `agent_id` (with `override_threshold`
-/// in place of its configured value) and every agent after it in priority order, for
-/// every batch currently in history, against each batch's actual real LLM calls - not
-/// just a client-side re-threshold of an already-stored score. This is the accurate but
-/// costly path (a real inference call per batch per downstream agent), used because
-/// re-thresholding alone can't show what a downstream agent would actually have produced
-/// if an upstream agent's accept/reject decision had come out differently.
-///
-/// Agents *before* `agent_id` are left untouched - their real accepted output is reused
-/// as the starting text for this re-run, exactly as it was when the chain first ran.
-pub fn recompute_from_agent(
-    history: &ComposeHistoryState,
-    buffer: &ComposeBuffer,
-    raw_buffer: &ComposeBuffer,
-    backend_cache: &ComposeBackendCache,
-    config: &Config,
-    app_handle: &AppHandle,
-    agent_id: &str,
-    override_threshold: f64,
-) {
-    let batch_ids: Vec<u64> = { history.lock().unwrap().batches.iter().map(|b| b.id).collect() };
-
-    for batch_id in batch_ids {
-        let prepared = {
-            let hist = history.lock().unwrap();
-            let batch = match hist.batches.iter().find(|b| b.id == batch_id) {
-                Some(b) => b,
-                None => continue,
-            };
-
-            let mut ordered: Vec<crate::config::ComposeAgent> = config
-                .compose_agents
-                .iter()
-                .filter(|a| a.enabled)
-                .cloned()
-                .collect();
-            ordered.sort_by_key(|a| a.priority);
-            let position = match ordered.iter().position(|a| a.id == agent_id) {
-                Some(p) => p,
-                None => {
-                    crate::log_info!(
-                        "Compose: recompute skipped batch {} - agent '{}' not found among {} enabled agent(s)",
-                        batch_id,
-                        agent_id,
-                        ordered.len()
-                    );
-                    continue;
-                }
-            };
-
-            let input_text = effective_output_before(batch, position);
-            let mut sub_agents = ordered[position..].to_vec();
-            if let Some(first) = sub_agents.first_mut() {
-                first.min_fidelity = override_threshold;
-            }
-
-            let start = batch.start;
-            let context_text = {
-                let buf = buffer.lock().unwrap();
-                let bounded_start = start.min(buf.len());
-                let context_start = if bounded_start > MAX_CONTEXT_CHARS {
-                    let mut i = bounded_start - MAX_CONTEXT_CHARS;
-                    while i > 0 && !buf.is_char_boundary(i) {
-                        i += 1;
-                    }
-                    i
-                } else {
-                    0
-                };
-                buf[context_start..bounded_start].trim().to_string()
-            };
-
-            Some((start, input_text, sub_agents, context_text, position))
-        };
-
-        let Some((start, input_text, sub_agents, context_text, position)) = prepared else {
-            continue;
-        };
-
-        let (final_text, new_stages) = run_agent_chain(
-            &input_text,
-            &context_text,
-            &sub_agents,
-            backend_cache,
-            config,
-            app_handle,
-            buffer,
-            raw_buffer,
-        );
-
-        let mut hist = history.lock().unwrap();
-        let Some(index) = hist.batches.iter().position(|b| b.id == batch_id) else {
-            continue;
-        };
-        let old_end = hist.batches[index].end;
-        if old_end > buffer.lock().unwrap().len() || start > old_end {
-            // Buffer has changed shape since we snapshotted (e.g. a live utterance
-            // landed mid-recompute) - skip this batch rather than corrupt it.
-            continue;
-        }
-        {
-            let mut buf = buffer.lock().unwrap();
-            buf.replace_range(start..old_end, &final_text);
-        }
-        let new_end = start + final_text.len();
-        let delta = new_end as isize - old_end as isize;
-        {
-            let batch = &mut hist.batches[index];
-            batch.stages.truncate(position);
-            batch.stages.extend(new_stages);
-            batch.end = new_end;
-        }
-        if delta != 0 {
-            for later in hist.batches.iter_mut().skip(index + 1) {
-                later.start = (later.start as isize + delta).max(0) as usize;
-                later.end = (later.end as isize + delta).max(0) as usize;
-            }
-        }
-        drop(hist);
-    }
-
-    emit_state(app_handle, buffer, raw_buffer, false, None);
-}
-
 /// Serializable snapshot of the batch history for the frontend's contribution panel.
 pub fn history_snapshot(history: &ComposeHistoryState) -> Vec<BatchRecord> {
     history.lock().unwrap().batches.clone()
@@ -1010,6 +1559,15 @@ pub fn history_snapshot(history: &ComposeHistoryState) -> Vec<BatchRecord> {
 pub fn clear_history(history: &ComposeHistoryState) {
     let mut hist = history.lock().unwrap();
     hist.batches.clear();
+}
+
+pub fn reset_pending(pending: &ComposePendingState) {
+    let mut state = pending.lock().unwrap();
+    state.start = 0;
+    state.count = 0;
+    state.generation += 1;
+    state.discard_before_generation = state.generation;
+    state.full_document_generation = None;
 }
 
 /// A short, filesystem-safe slug derived from the first few words of `text` - not a
@@ -1041,6 +1599,123 @@ pub fn filename_slug(text: &str) -> String {
         slug.truncate(cut);
     }
     slug
+}
+
+fn topic_filename_slug(text: &str) -> String {
+    fn is_stopword(word: &str) -> bool {
+        matches!(
+            word,
+            "about" | "actually" | "again" | "also" | "because" | "been" | "being"
+                | "could" | "does" | "doing" | "from" | "have" | "here" | "into"
+                | "just" | "like" | "really" | "should" | "something" | "that"
+                | "their" | "there" | "these" | "thing" | "things" | "this" | "those"
+                | "through" | "very" | "was" | "were" | "what" | "when" | "where"
+                | "which" | "while" | "with" | "would" | "your" | "youre"
+        )
+    }
+
+    let mut scored: std::collections::HashMap<String, (usize, usize)> =
+        std::collections::HashMap::new();
+    for (index, raw_word) in text.split_whitespace().enumerate() {
+        let word = raw_word
+            .chars()
+            .filter(|character| character.is_ascii_alphanumeric())
+            .collect::<String>()
+            .to_ascii_lowercase();
+        if word.len() < 4 || is_stopword(&word) {
+            continue;
+        }
+        let entry = scored.entry(word).or_insert((0, index));
+        entry.0 += 1;
+    }
+
+    let mut words: Vec<(String, usize, usize)> = scored
+        .into_iter()
+        .map(|(word, (count, first))| (word, count, first))
+        .collect();
+    words.sort_by(|left, right| {
+        right
+            .1
+            .cmp(&left.1)
+            .then_with(|| left.2.cmp(&right.2))
+            .then_with(|| left.0.cmp(&right.0))
+    });
+    words.truncate(6);
+    if words.len() < 3 {
+        return filename_slug(text);
+    }
+
+    let mut slug = words
+        .into_iter()
+        .map(|(word, _, _)| word)
+        .collect::<Vec<_>>()
+        .join("-");
+    if slug.len() > 64 {
+        let cut = slug[..64].rfind('-').unwrap_or(64);
+        slug.truncate(cut);
+    }
+    slug
+}
+
+/// Uses the active refinement backend to name an offloaded document from its overall
+/// subject rather than its opening words. The final sanitizer is intentionally strict:
+/// model output is advisory, and a safe deterministic slug remains the fallback.
+pub fn semantic_filename_slug(
+    text: &str,
+    backend_cache: &ComposeBackendCache,
+    config: &Config,
+    app_handle: &AppHandle,
+) -> String {
+    const TITLE_PROMPT: &str = "Create a concise filename describing the main subject of the \
+        entire document. Use three to seven specific words. Return only lowercase words \
+        separated by hyphens, with no extension, quotation marks, explanation, or punctuation.";
+
+    let generated = ensure_backend_loaded(backend_cache, config, app_handle).and_then(|_| {
+        let backend = backend_cache
+            .lock()
+            .unwrap()
+            .as_ref()
+            .cloned()
+            .ok_or("Compose backend not loaded")?;
+        let result = backend
+            .lock()
+            .unwrap()
+            .complete(Some(TITLE_PROMPT), text.trim(), 24);
+        result
+    });
+
+    if let Ok(candidate) = generated {
+        crate::log_info!("Compose: filename model proposed '{}'", candidate.trim());
+        let words: Vec<String> = candidate
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .split(|character: char| !character.is_ascii_alphanumeric())
+            .filter(|word| !word.is_empty())
+            .take(7)
+            .map(|word| word.to_ascii_lowercase())
+            .collect();
+        if (3..=7).contains(&words.len()) {
+            let slug = words.join("-");
+            let opening_words = normalized_words(text);
+            let merely_repeats_opening = words.len() <= opening_words.len()
+                && words
+                    .iter()
+                    .zip(opening_words.iter())
+                    .all(|(candidate_word, opening_word)| candidate_word == opening_word);
+            if slug.len() <= 64 && !merely_repeats_opening {
+                return slug;
+            }
+            if merely_repeats_opening {
+                crate::log_info!(
+                    "Compose: filename proposal merely repeated the opening; using topic fallback"
+                );
+            }
+        }
+        crate::log_info!("Compose: generated offload title was unusable; using safe fallback");
+    }
+
+    topic_filename_slug(text)
 }
 
 fn emit_state(
@@ -1120,5 +1795,161 @@ mod tests {
     #[test]
     fn capitalizes_first_letter_of_whole_text() {
         assert_eq!(capitalize_sentence_starts("hello. world."), "Hello. World.");
+    }
+
+    #[test]
+    fn repeated_phrase_guard_rejects_inserted_duplicate_tail() {
+        let raw = "The recording should stop and choose a useful file name.";
+        let repeated =
+            "Choose a useful file name. The recording should stop and choose a useful file name.";
+        assert!(introduces_repeated_phrase(raw, repeated));
+        assert!(!introduces_repeated_phrase(raw, raw));
+    }
+
+    #[test]
+    fn prompt_markup_guard_is_independent_of_fidelity() {
+        assert!(leaks_prompt_markup(
+            "The text you must correct and return will be given between <transcript> tags."
+        ));
+        assert!(!leaks_prompt_markup("This is an ordinary refined sentence."));
+    }
+
+    #[test]
+    fn editorial_wrapper_is_removed_without_deleting_dictated_words() {
+        assert_eq!(
+            strip_editorial_wrapper(
+                "Um, come up with a useful file name.",
+                "Here is the corrected text:\n\nUm, come up with a useful file name."
+            ),
+            "Um, come up with a useful file name."
+        );
+        assert_eq!(
+            strip_editorial_wrapper(
+                "Here is the corrected text: that I dictated.",
+                "Here is the corrected text: that I dictated."
+            ),
+            "Here is the corrected text: that I dictated."
+        );
+        assert_eq!(
+            strip_editorial_wrapper(
+                "The corrected sentence.",
+                "<transcript>\nThe corrected sentence.\n</transcript>"
+            ),
+            "The corrected sentence."
+        );
+    }
+
+    #[test]
+    fn immediate_cleanup_collapses_adjacent_word_duplicates_only() {
+        assert_eq!(
+            collapse_adjacent_duplicate_words("I don't know if if that works works."),
+            "I don't know if that works."
+        );
+        assert_eq!(
+            collapse_adjacent_duplicate_words("No. No. Keep both."),
+            "No. No. Keep both."
+        );
+    }
+
+    #[test]
+    fn refinement_cannot_create_a_tiny_sentence_fragment() {
+        let source = "The generated name should describe the subject instead of copying these opening words.";
+        let fragmented =
+            "The generated name should describe the subject instead of copying these. Opening words.";
+        assert!(introduces_short_sentence_fragment(source, fragmented));
+        assert!(!introduces_short_sentence_fragment(source, source));
+        assert!(!introduces_short_sentence_fragment(
+            "It works. Try again.",
+            "It works. Try again."
+        ));
+    }
+
+    #[test]
+    fn rolling_confirmation_keeps_incomplete_tail_mutable() {
+        let text = "This sentence is complete. Places where";
+        let end = confirmed_tail_end(text).expect("complete prefix");
+        assert_eq!(&text[..end], "This sentence is complete. ");
+        assert_eq!(&text[end..], "Places where");
+    }
+
+    #[test]
+    fn rolling_confirmation_accepts_completed_tail_later() {
+        let text = "This sentence is complete. Places where errors exist.";
+        assert_eq!(confirmed_tail_end(text), Some(text.len()));
+    }
+
+    #[test]
+    fn replacement_preserves_neighbor_spacing() {
+        assert_eq!(
+            preserve_boundary_whitespace("  raw sentence. ", "Refined sentence."),
+            "  Refined sentence. "
+        );
+    }
+
+    #[test]
+    fn ordered_fidelity_rejects_clause_shuffle() {
+        let source = "First we capture speech. Then we refine the transcript.";
+        let shuffled = "Then we refine the transcript. First we capture speech.";
+        assert!(ordered_word_fidelity(source, shuffled) < 0.72);
+    }
+
+    #[test]
+    fn read_only_context_copy_is_rejected() {
+        let context = "Earlier text contains a distinctive sequence about watching the logs.";
+        let input = "This is the new sentence to edit.";
+        let contaminated =
+            "This is the new sentence to edit. Earlier text contains a distinctive sequence.";
+        assert!(copies_read_only_context(input, context, contaminated));
+        assert!(!copies_read_only_context(input, context, input));
+    }
+
+    #[test]
+    fn source_closing_request_cannot_be_moved_to_opening() {
+        let source = "This document begins with background and continues through several \
+            useful details before reaching its final request. So if you could do that, \
+            that would be really cool.";
+        let moved = "So if you could do that, that would be really cool. This document \
+            begins with background and continues through several useful details.";
+        assert!(moves_late_source_phrase_to_front(source, moved));
+        assert!(!moves_late_source_phrase_to_front(source, source));
+    }
+
+    #[test]
+    fn short_late_clause_cannot_be_moved_to_opening() {
+        let source = "Alright, so here we go again. This document discusses streaming \
+            refinement behavior where it was taking and copying.";
+        let moved = "Taking and copying. Alright, so here we go again. This document \
+            discusses streaming refinement behavior.";
+        assert!(moves_late_source_phrase_to_front(source, moved));
+    }
+
+    #[test]
+    fn complete_source_sentence_cannot_be_silently_dropped() {
+        let source = "The first sentence provides useful context. Phrase should never jump \
+            to the beginning.";
+        let missing = "The first sentence provides useful context.";
+        assert!(drops_source_sentence(source, missing));
+        assert!(!drops_source_sentence(source, source));
+    }
+
+    #[test]
+    fn topic_filename_uses_the_whole_document() {
+        let text = "An opening sentence says hello. Later the document repeatedly discusses \
+            streaming refinement, transcript refinement, filename generation, and streaming \
+            safety. The final request is better filename generation.";
+        let slug = topic_filename_slug(text);
+        assert!(slug.contains("streaming"));
+        assert!(slug.contains("refinement"));
+        assert!(slug.contains("filename"));
+        assert!(!slug.starts_with("opening-sentence"));
+    }
+
+    #[test]
+    fn long_unformatted_text_receives_paragraph_breaks() {
+        let sentence = "This sentence contains enough ordinary words for a realistic test. ";
+        let input = sentence.repeat(12);
+        let formatted = add_paragraph_breaks_to_long_block(input.trim());
+        assert!(formatted.contains("\n\n"));
+        assert_eq!(normalized_words(&formatted), normalized_words(input.trim()));
     }
 }

@@ -60,6 +60,19 @@ interface SessionStats {
   };
 }
 
+interface MemoryStatus {
+  gpuDetected: boolean;
+  adapterName?: string | null;
+  dedicatedVramBytes?: number | null;
+  gpuCurrentUsageBytes?: number | null;
+  gpuAvailableVramBytes?: number | null;
+  systemMemoryTotalBytes?: number | null;
+  systemMemoryAvailableBytes?: number | null;
+  whisperEstimateBytes: number;
+  composeEstimateBytes: number;
+  composeMemorySource: string;
+}
+
 const formatBytes = (bytes: number) => {
   if (bytes >= 1_073_741_824) return `${(bytes / 1_073_741_824).toFixed(2)} GB`;
   if (bytes >= 1_048_576) return `${(bytes / 1_048_576).toFixed(2)} MB`;
@@ -86,13 +99,33 @@ export function StatusPage({
   onOpenHardwareReport,
 }: StatusPageProps) {
   const [stats, setStats] = useState<SessionStats | null>(null);
+  const [memory, setMemory] = useState<MemoryStatus | null>(null);
 
   useEffect(() => {
-    const refresh = () => invoke<SessionStats>('get_session_stats').then(setStats).catch(() => {});
+    const refresh = () => {
+      invoke<SessionStats>('get_session_stats').then(setStats).catch(() => {});
+      invoke<MemoryStatus>('check_combined_vram').then(setMemory).catch(() => {});
+    };
     refresh();
     const interval = setInterval(refresh, 3000);
     return () => clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    // Provider/model switches change the projected local-memory allocation
+    // immediately. Clear the old projection and recalculate now rather than showing
+    // the previous backend's number until the next periodic sample.
+    setMemory(null);
+    invoke<MemoryStatus>('check_combined_vram').then(setMemory).catch(() => {});
+  }, [
+    config.enable_gpu,
+    config.local_model_size,
+    config.compose_backend,
+    config.compose_model_path,
+    config.compose_use_gpu,
+    config.compose_ollama_url,
+    config.compose_ollama_model,
+  ]);
 
   const transcriptionReady = Boolean(modelStatus[config.local_model_size]);
   const composeReady = config.compose_backend === 'embedded'
@@ -110,6 +143,18 @@ export function StatusPage({
     ? (stats.compose.accepted / stats.compose.agentRuns) * 100
     : 0;
   const requestCount = (stats?.transcriptionsCount ?? 0) + (stats?.compose.agentRuns ?? 0);
+  const systemTotal = memory?.systemMemoryTotalBytes ?? 0;
+  const systemAvailable = memory?.systemMemoryAvailableBytes ?? 0;
+  const systemUsed = Math.max(0, systemTotal - systemAvailable);
+  const systemPercent = systemTotal ? Math.min(100, (systemUsed / systemTotal) * 100) : 0;
+  const graphicsTotal = memory?.dedicatedVramBytes ?? 0;
+  // Keep this provider-sensitive: adapter-wide usage often remains resident for a
+  // while after a backend switch and therefore looks frozen. The graph represents the
+  // active VoxBridge pipeline allocation; local Ollama contributes its reported model
+  // allocation, while embedded and Whisper use model-derived estimates.
+  const graphicsUsed = (memory?.whisperEstimateBytes ?? 0) + (memory?.composeEstimateBytes ?? 0);
+  const whisperPercent = graphicsTotal ? Math.min(100, ((memory?.whisperEstimateBytes ?? 0) / graphicsTotal) * 100) : 0;
+  const refinementPercent = graphicsTotal ? Math.min(100, ((memory?.composeEstimateBytes ?? 0) / graphicsTotal) * 100) : 0;
 
   const metrics = [
     ['Audio captured', formatBytes(stats?.bytesRecorded ?? 0), 'Audio data processed during this application session.'],
@@ -157,6 +202,52 @@ export function StatusPage({
               <div style={{ marginTop: '6px', color: tokens.colors.textPrimary, fontSize: tokens.typography.sizeXs, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{value}</div>
             </div>
           ))}
+        </section>
+
+        <section style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '12px' }}>
+          <div style={{ padding: '15px 16px', border: '1px solid rgba(255,255,255,.08)', borderRadius: tokens.radii.panel, background: 'rgba(255,255,255,.012)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'center' }}>
+              <span style={{ color: tokens.colors.textPrimary, fontSize: tokens.typography.sizeSm, fontWeight: 700 }}>System memory</span>
+              <span style={{ color: tokens.colors.textMuted, fontFamily: tokens.typography.fontMono, fontSize: tokens.typography.sizeXs }}>
+                {systemTotal ? `${formatBytes(systemUsed)} / ${formatBytes(systemTotal)}` : 'Unavailable'}
+              </span>
+            </div>
+            <div style={{ height: '9px', marginTop: '12px', overflow: 'hidden', borderRadius: '999px', background: 'rgba(255,255,255,.07)' }}>
+              <div style={{ width: `${systemPercent}%`, height: '100%', borderRadius: 'inherit', background: 'linear-gradient(90deg, #ff8a00, #ffd966)', transition: 'width .25s ease' }} />
+            </div>
+            <div style={{ marginTop: '8px', color: tokens.colors.textMuted, fontSize: '11px' }}>
+              {systemTotal ? `${systemPercent.toFixed(1)}% used · ${formatBytes(systemAvailable)} available` : 'System memory reporting is unavailable.'}
+            </div>
+          </div>
+
+          <div style={{ padding: '15px 16px', border: '1px solid rgba(255,255,255,.08)', borderRadius: tokens.radii.panel, background: 'rgba(255,255,255,.012)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'center' }}>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '7px', color: tokens.colors.textPrimary, fontSize: tokens.typography.sizeSm, fontWeight: 700 }}>
+                Graphics memory
+                <HelpBubble label="Graphics memory estimate" text="This graph estimates memory assigned to the active VoxBridge pipeline, so it recalculates when you switch refinement providers. Whisper and embedded refinement use model-size estimates. A local Ollama server may report its loaded model allocation; an Ollama server on another computer is not included." />
+              </span>
+              <span style={{ color: tokens.colors.textMuted, fontFamily: tokens.typography.fontMono, fontSize: tokens.typography.sizeXs }}>
+                {graphicsTotal ? `${formatBytes(graphicsUsed)} estimated / ${formatBytes(graphicsTotal)}` : 'Unavailable'}
+              </span>
+            </div>
+            <div style={{ display: 'flex', height: '9px', marginTop: '12px', overflow: 'hidden', borderRadius: '999px', background: 'rgba(255,255,255,.07)' }}>
+              <div title="Whisper estimate" style={{ width: `${whisperPercent}%`, height: '100%', background: '#ff8a00', transition: 'width .25s ease' }} />
+              <div title="Refinement estimate" style={{ width: `${refinementPercent}%`, height: '100%', background: '#ffd966', transition: 'width .25s ease' }} />
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '8px', marginTop: '10px' }}>
+              <div style={{ padding: '8px 9px', borderRadius: '7px', background: 'rgba(255,138,0,.06)' }}>
+                <div style={{ color: tokens.colors.textMuted, fontSize: '10px' }}>Whisper projected allocation</div>
+                <div style={{ marginTop: '3px', color: tokens.colors.textPrimary, fontFamily: tokens.typography.fontMono, fontSize: '12px' }}>{formatBytes(memory?.whisperEstimateBytes ?? 0)} · {whisperPercent.toFixed(1)}%</div>
+              </div>
+              <div style={{ padding: '8px 9px', borderRadius: '7px', background: 'rgba(255,184,0,.06)' }}>
+                <div style={{ color: tokens.colors.textMuted, fontSize: '10px' }}>{memory?.composeMemorySource || 'Recalculating refinement allocation'}</div>
+                <div style={{ marginTop: '3px', color: tokens.colors.textPrimary, fontFamily: tokens.typography.fontMono, fontSize: '12px' }}>{formatBytes(memory?.composeEstimateBytes ?? 0)} · {refinementPercent.toFixed(1)}%</div>
+              </div>
+            </div>
+            <div style={{ marginTop: '8px', color: tokens.colors.textMuted, fontSize: '11px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              {memory?.adapterName || 'Local graphics adapter not detected'}{memory?.gpuAvailableVramBytes ? ` · ${formatBytes(memory.gpuAvailableVramBytes)} available` : ''}
+            </div>
+          </div>
         </section>
 
         <section style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', borderTop: '1px solid rgba(255,255,255,.08)', borderLeft: '1px solid rgba(255,255,255,.08)' }}>

@@ -3,7 +3,7 @@ use crate::config::Config;
 use crate::hotkey::HardwareHotkey;
 use crate::local_whisper::{VoxBridgeEngineCache, WhisperEngineCache};
 use crate::platform;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, Mutex};
 
 pub struct AppState {
@@ -67,6 +67,13 @@ pub struct AppState {
     /// Cached embedded-or-remote LLM backend for Compose - `None` until first used, or
     /// after `invalidate_backend` following a settings change.
     pub compose_backend: crate::compose::ComposeBackendCache,
+    /// Invalidates replies and preload attempts started against an older refinement
+    /// provider. Blocking native inference cannot be force-killed safely, so stale work
+    /// is discarded before it can mutate the document or status.
+    pub compose_backend_generation: Arc<AtomicU64>,
+    /// Set by a live provider/model change when the current document must be rerun after
+    /// the replacement backend has finished loading and warming.
+    pub compose_rerun_after_preload: Arc<AtomicBool>,
     pub compose_loading: Arc<Mutex<bool>>,
     pub compose_preload_error: Arc<Mutex<Option<String>>>,
     /// Session-only offload location selected in the UI or with `--offload-location`.
@@ -141,6 +148,8 @@ impl Default for AppState {
             compose_pending: Arc::new(Mutex::new(crate::compose::PendingBatch::default())),
             compose_history: Arc::new(Mutex::new(crate::compose::ComposeHistory::default())),
             compose_backend: Arc::new(Mutex::new(None)),
+            compose_backend_generation: Arc::new(AtomicU64::new(0)),
+            compose_rerun_after_preload: Arc::new(AtomicBool::new(false)),
             compose_loading: Arc::new(Mutex::new(false)),
             compose_preload_error: Arc::new(Mutex::new(None)),
             compose_dump_dir_override: Arc::new(Mutex::new(None)),

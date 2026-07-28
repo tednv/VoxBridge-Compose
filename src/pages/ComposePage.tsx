@@ -126,6 +126,7 @@ export function ComposePage({ onCopyToClipboard, onEditAgent, currentStatus, eng
   const [selectedAgentIndex, setSelectedAgentIndex] = useState(0);
   const [inspectedAgentId, setInspectedAgentId] = useState<string | null>(null);
   const [dumpStatus, setDumpStatus] = useState<string | null>(null);
+  const [semanticFilename, setSemanticFilename] = useState<string | null>(null);
   const [dictationsDir, setDictationsDir] = useState<string | null>(null);
   const [offloadLocations, setOffloadLocations] = useState<string[]>([]);
   const [rememberOffloadLocation, setRememberOffloadLocation] = useState(false);
@@ -136,6 +137,10 @@ export function ComposePage({ onCopyToClipboard, onEditAgent, currentStatus, eng
   const polishedPaneRef = useRef<HTMLDivElement | null>(null);
   const originalFollowsOutput = useRef(true);
   const polishedFollowsOutput = useRef(true);
+  const previousStatusRef = useRef(currentStatus);
+  const filenameRefreshAfterStopRef = useRef(false);
+  const filenameRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const filenameRequestIdRef = useRef(0);
 
   // The live fidelity-tuning slider tunes one agent at a time - step through the chain
   // with the nav arrows below. Every OTHER agent's stage keeps its real accept/reject
@@ -259,7 +264,11 @@ export function ComposePage({ onCopyToClipboard, onEditAgent, currentStatus, eng
   // actually ran - only the selected agent's own decision is hypothetical, so this won't
   // reflect what a downstream agent WOULD have seen had an upstream one's real decision
   // also been different (that would need an actual re-run, not just re-thresholding).
-  const previewText = history.length > 0
+  // The live document is authoritative. History batches may intentionally overlap
+  // (for example, full-context refinement starts each batch at offset zero), so joining
+  // every batch repeats the document in the visible pane. Only reconstruct a
+  // hypothetical view while the user is actively previewing a changed threshold.
+  const previewText = previewThreshold !== null && history.length > 0
     ? history
         .map((batch) => {
           let current = batch.rawText;
@@ -278,6 +287,69 @@ export function ComposePage({ onCopyToClipboard, onEditAgent, currentStatus, eng
     }
   }, [previewText]);
 
+  useEffect(() => {
+    const previous = previousStatusRef.current;
+    previousStatusRef.current = currentStatus;
+    if (previous !== 'Ready' && currentStatus === 'Ready' && text.trim()) {
+      filenameRefreshAfterStopRef.current = true;
+      setSemanticFilename(null);
+    } else if (previous === 'Ready' && currentStatus === 'Recording') {
+      setSemanticFilename(null);
+    }
+  }, [currentStatus, text]);
+
+  useEffect(() => {
+    if (
+      !filenameRefreshAfterStopRef.current
+      || currentStatus !== 'Ready'
+      || correcting
+      || !text.trim()
+    ) {
+      return;
+    }
+
+    filenameRefreshAfterStopRef.current = false;
+    invoke<string>('suggest_compose_filename', { text })
+      .then((slug) => setSemanticFilename(`${slug}.txt`))
+      .catch(() => setSemanticFilename(`${generateFilenameSlug(text)}.txt`));
+  }, [currentStatus, correcting, text]);
+
+  // A settled rolling refinement is the natural pause signal for Compose. Wait a
+  // little longer than the correction debounce, then ask the active backend for a
+  // topic-based name from the complete refined document. New speech or another agent
+  // pass cancels the pending request, so filename generation never runs per keystroke.
+  useEffect(() => {
+    if (filenameRefreshTimerRef.current) {
+      clearTimeout(filenameRefreshTimerRef.current);
+      filenameRefreshTimerRef.current = null;
+    }
+    if (correcting || currentStatus !== 'Recording' || text.trim().split(/\s+/).length < 20) {
+      return;
+    }
+
+    const requestId = ++filenameRequestIdRef.current;
+    filenameRefreshTimerRef.current = setTimeout(() => {
+      invoke<string>('suggest_compose_filename', { text })
+        .then((slug) => {
+          if (filenameRequestIdRef.current === requestId) {
+            setSemanticFilename(`${slug}.txt`);
+          }
+        })
+        .catch(() => {
+          if (filenameRequestIdRef.current === requestId) {
+            setSemanticFilename(`${generateFilenameSlug(text)}.txt`);
+          }
+        });
+    }, 2500);
+
+    return () => {
+      if (filenameRefreshTimerRef.current) {
+        clearTimeout(filenameRefreshTimerRef.current);
+        filenameRefreshTimerRef.current = null;
+      }
+    };
+  }, [currentStatus, correcting, text]);
+
   const handleClear = () => {
     // Optimistic: clear the visible text immediately regardless of the round-trip, so
     // the button always visibly responds even if the backend call is slow or fails.
@@ -285,6 +357,7 @@ export function ComposePage({ onCopyToClipboard, onEditAgent, currentStatus, eng
     setText('');
     setHistory([]);
     setPreviewThreshold(null);
+    setSemanticFilename(null);
     invoke('clear_compose_text').catch((error) => {
       console.error('Failed to clear Compose text:', error);
     });
@@ -296,6 +369,7 @@ export function ComposePage({ onCopyToClipboard, onEditAgent, currentStatus, eng
         setRawText('');
         setText('');
         setHistory([]);
+        setSemanticFilename(null);
         setDumpStatus(`Offloaded as ${result.fileName}`);
         setTimeout(() => setDumpStatus(null), 4000);
       })
@@ -463,7 +537,7 @@ export function ComposePage({ onCopyToClipboard, onEditAgent, currentStatus, eng
               : correcting
                 ? `${activeAgent ? `${activeAgent} is working...` : 'Cleaning up...'}`
                 : previewText
-                  ? `${generateFilenameSlug(previewText)}.txt`
+                  ? semanticFilename ?? `${generateFilenameSlug(previewText)}.txt`
                   : ''}
           </span>
           <div style={{ display: 'flex', gap: tokens.spacing.xs }}>

@@ -558,7 +558,10 @@ pub fn listen_continuously(
         const SPEECH_RMS_THRESHOLD: f32 = 0.02;
         const WINDOW_MS: f32 = 30.0;
         const MIN_UTTERANCE_MS: f32 = 300.0;
-        const MAX_UTTERANCE_MS: f32 = 30_000.0;
+        // Keep continuous dictation responsive: Whisper can process these rolling
+        // windows while capture continues, letting Compose revise recent sentences
+        // instead of waiting for a half-minute monologue to finish.
+        const MAX_UTTERANCE_MS: f32 = 8_000.0;
 
         let window_size = ((sample_rate as f32) * (WINDOW_MS / 1000.0)).max(1.0) as usize;
         let silence_end_windows = ((silence_end_ms as f32) / WINDOW_MS).ceil().max(1.0) as usize;

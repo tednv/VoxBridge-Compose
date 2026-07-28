@@ -86,6 +86,24 @@ pub async fn save_config(
         )
     };
 
+    // Claim a generation before any provider preparation that can await a download or
+    // network request. Without this, rapid Embedded -> Ollama -> Embedded changes can
+    // finish out of order and an older, slower request can overwrite the user's latest
+    // selection.
+    let compose_switch_generation = if compose_backend_changed {
+        crate::compose::invalidate_backend(
+            &state.compose_backend,
+            &state.compose_backend_generation,
+        );
+        Some(
+            state
+                .compose_backend_generation
+                .load(std::sync::atomic::Ordering::SeqCst),
+        )
+    } else {
+        None
+    };
+
     if compose_backend_changed {
         *state.compose_loading.lock().unwrap() = true;
         let _ = app_handle.emit(
@@ -96,7 +114,10 @@ pub async fn save_config(
 
         let preparation = if merged_config.compose_backend == "embedded" {
             let configured = std::path::Path::new(&merged_config.compose_model_path);
-            if merged_config.compose_model_path.trim().is_empty() || !configured.exists() {
+            if merged_config.compose_model_path.trim().is_empty()
+                || !configured.exists()
+                || crate::app::commands::compose::uses_legacy_default_embedded_model(configured)
+            {
                 crate::app::commands::compose::ensure_default_embedded_model()
                     .await
                     .map(|path| merged_config.compose_model_path = path)
@@ -116,6 +137,18 @@ pub async fn save_config(
         };
 
         if let Err(error) = preparation {
+            if compose_switch_generation
+                != Some(
+                    state
+                        .compose_backend_generation
+                        .load(std::sync::atomic::Ordering::SeqCst),
+                )
+            {
+                crate::log_info!(
+                    "Compose: ignored preparation failure from a superseded provider switch"
+                );
+                return Ok(());
+            }
             *state.compose_loading.lock().unwrap() = false;
             *state.compose_preload_error.lock().unwrap() = Some(error.clone());
             let _ = app_handle.emit(
@@ -123,6 +156,17 @@ pub async fn save_config(
                 serde_json::json!({ "loading": false, "error": error }),
             );
             return Err(error);
+        }
+
+        if compose_switch_generation
+            != Some(
+                state
+                    .compose_backend_generation
+                    .load(std::sync::atomic::Ordering::SeqCst),
+            )
+        {
+            crate::log_info!("Compose: discarded a superseded provider switch");
+            return Ok(());
         }
     }
 
@@ -255,7 +299,19 @@ pub async fn save_config(
     }
 
     if compose_settings_changed {
-        crate::compose::invalidate_backend(&state.compose_backend);
+        let has_document = !state.compose_raw_buffer.lock().unwrap().trim().is_empty();
+        state
+            .compose_rerun_after_preload
+            .store(has_document, std::sync::atomic::Ordering::SeqCst);
+        // Backend changes already claimed and invalidated their generation before the
+        // potentially slow provider preparation above. Other Compose setting changes
+        // can invalidate here immediately before their replacement preload.
+        if !compose_backend_changed {
+            crate::compose::invalidate_backend(
+                &state.compose_backend,
+                &state.compose_backend_generation,
+            );
+        }
         crate::compose::spawn_compose_preload(app_handle.clone());
     }
 
@@ -326,7 +382,10 @@ pub async fn reset_application_to_defaults(
         *dump_dir_override = None;
     }
 
-    crate::compose::invalidate_backend(&state.compose_backend);
+    crate::compose::invalidate_backend(
+        &state.compose_backend,
+        &state.compose_backend_generation,
+    );
 
     {
         let mut hotkey_error = state.hotkey_error.lock().unwrap();

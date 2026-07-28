@@ -48,11 +48,25 @@ Audio is not sent to Ollama. Ollama receives text only when it is selected as
 the refinement provider. Users of a network Ollama server are responsible for
 the privacy and security of that connection.
 
+Live refinement uses a confirmed-prefix/revisable-tail pipeline: completed text
+remains stable while one recent tail is refined serially, and newer speech is
+coalesced for the following pass. Results are applied only to the exact source span
+that produced them, so a late response cannot overwrite newer dictation. Stopping
+recording waits for outstanding recognition and runs a separate full-document
+reconciliation. Output safeguards reject repetition, missing or reordered sentences,
+context leakage, malformed joins, tiny sentence fragments, paragraph collapse, and
+unsupported rewrites. This design is informed by the LocalAgreement research behind
+[Whisper-Streaming](https://github.com/ufal/whisper_streaming) and
+[SimulStreaming](https://github.com/ufal/SimulStreaming); the implementation is
+original to VoxBridge Compose. See [NOTICE.md](NOTICE.md) for full credit and
+licensing context, including the earlier incremental-recognition stability work
+and bounded-revision research that also informed the design.
+
 ## Status
 
-VoxBridge Compose is preparing for its first independent release. Windows is the
-primary tested platform. Linux support is retained, but release packages should be
-treated as pre-release until exercised on representative systems.
+VoxBridge Compose is under active development. Windows is the primary tested
+platform. Linux support is retained, but release packages should be treated as
+pre-release until exercised on representative systems.
 
 ## What VoxBridge Compose adds
 
@@ -95,8 +109,20 @@ and cross-platform integrations—while introducing the following:
   of likely speech-recognition errors
 - Sequential multi-agent execution, per-stage progress, acceptance safeguards,
   recomputation, and earlier-segment correction
+- Serialized, generation-aware live refinement that safely coalesces new speech
+  and discards stale results after provider changes
+- Final whole-document reconciliation that preserves established paragraphs and
+  stable text while cleaning the most recent dictation
 - Optional bounded saved-history context per agent
-- Automatic download and preload of the default embedded model
+- Qwen3 4B Instruct as the recommended embedded model, with a lighter Qwen2.5
+  1.5B option and support for a custom GGUF file
+- Model installation state, download controls, preload progress, and a
+  graphics-memory capacity check before managed downloads
+- Safe switching between embedded refinement and local or network Ollama,
+  including preload and automatic document reconciliation after the new provider
+  becomes ready
+- Context-aware filename suggestions based on the overall document rather than
+  simply copying its opening words
 
 ### Privacy, history, and offloading
 
@@ -118,6 +144,9 @@ and cross-platform integrations—while introducing the following:
   Data and logs settings
 - Processor, graphics adapter, system memory, graphics memory, Vulkan, request,
   word, agent, timing, cache, and acceptance reporting
+- Live graphics-memory use when the platform reports it, plus separate recognition
+  and refinement estimates; local Ollama memory is read from its runtime when
+  available and network Ollama is clearly marked as unmeasured
 - Privacy-conscious bug-report preparation with local-path redaction and a
   review step before opening GitHub
 - Windows taskbar indicators for recording and transcription activity
@@ -154,6 +183,10 @@ The launch argument takes priority for that session only.
 - Comment, naming, encoding, and unused-code cleanup
 - Broader Linux package testing
 
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for release-by-release details.
+
 ## Build from source
 
 Clone recursively so the separate VoxBridge runtime and its native engine
@@ -189,7 +222,8 @@ VoxBridge Compose gratefully acknowledges:
 - [whisper.cpp](https://github.com/ggerganov/whisper.cpp) and
   [llama.cpp](https://github.com/ggml-org/llama.cpp), which provide the native
   inference foundations used by VoxBridge.
-- [Qwen2.5](https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF), the default
+- [Qwen3 4B Instruct 2507](https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507),
+  distributed as GGUF by [Unsloth](https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF), the default
   embedded refinement model, and [Ollama](https://ollama.com/) as an optional
   user-configured local model service.
 - The Tauri, Preact, Tabler Icons, Rust, and broader open-source communities.
