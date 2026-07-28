@@ -27,7 +27,17 @@ No account or hosted speech service is required.
 
 ## Workspace
 
-![VoxBridge Compose workspace](docs/screenshots/compose-workspace.svg)
+### Compose
+
+![VoxBridge Compose workspace](docs/screenshots/compose-workspace.png)
+
+### Agents
+
+![VoxBridge Compose agent settings](docs/screenshots/agent-settings.png)
+
+### Status
+
+![VoxBridge Compose pipeline status](docs/screenshots/status-pipeline.png)
 
 ## Architecture
 
