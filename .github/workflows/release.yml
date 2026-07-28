@@ -15,7 +15,7 @@ on:
       tag_name:
         description: "Tag to attach the release to (only used for manual runs, not tag pushes)"
         required: false
-        default: "v0.1.0"
+        default: "v0.1.1"
 
 jobs:
   build-windows:

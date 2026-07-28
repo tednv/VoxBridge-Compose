@@ -1,6 +1,6 @@
 [package]
 name = "voxbridge-compose"
-version = "0.1.0"
+version = "0.1.1"
 description = "GPU-first local transcription and composition workspace"
 authors = ["VoxBridge Compose contributors"]
 license = "AGPL-3.0-only"
