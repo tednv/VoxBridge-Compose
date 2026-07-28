@@ -1,0 +1,82 @@
+name: Bug report
+description: Report a reproducible problem in VoxBridge Compose
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve VoxBridge Compose. For a security issue, use private vulnerability reporting instead.
+        Remove recordings, transcript contents, credentials, local paths, usernames, machine names, addresses, and other private data before submitting.
+  - type: input
+    id: version
+    attributes:
+      label: VoxBridge Compose version
+      placeholder: "0.2.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: operating-system
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - Linux
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: recognition
+    attributes:
+      label: Speech-recognition processing
+      options:
+        - Graphics accelerated
+        - Processor
+        - Unknown or not applicable
+    validations:
+      required: true
+  - type: dropdown
+    id: refinement
+    attributes:
+      label: Text-refinement provider
+      options:
+        - Embedded model
+        - Ollama on this computer
+        - Ollama on another computer
+        - Unknown or not applicable
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the problem and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Provide the smallest reliable sequence of actions.
+      placeholder: |
+        1. Open…
+        2. Select…
+        3. Start…
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Sanitized diagnostics
+      description: Paste only the relevant, reviewed lines after removing private data.
+      render: text
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy confirmation
+      options:
+        - label: I reviewed this report and removed credentials, recordings, transcripts, local paths, network details, and personal information.
+          required: true
+        - label: I checked existing issues for the same problem.
+          required: true

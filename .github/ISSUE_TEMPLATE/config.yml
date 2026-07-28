@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/tednv/VoxBridge-Compose/security/advisories/new
+    about: Report vulnerabilities privately. Do not open a public issue.
+  - name: FOSS Voquill
+    url: https://github.com/jackbrumley/voquill
+    about: Report issues in the original project to its maintainers.
