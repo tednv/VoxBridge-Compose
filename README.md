@@ -54,6 +54,92 @@ VoxBridge Compose is preparing for its first independent release. Windows is the
 primary tested platform. Linux support is retained, but release packages should be
 treated as pre-release until exercised on representative systems.
 
+## What VoxBridge Compose adds
+
+VoxBridge Compose retains FOSS Voquill's original desktop foundation—including
+audio capture, global shortcuts, local history, diagnostics, model management,
+and cross-platform integrations—while introducing the following:
+
+### Compose workspace
+
+- A Compose-first workspace with equal, independently scrolling raw-transcript
+  and refined-text panes
+- Recording, readiness, active-agent progress, and profile controls in one
+  compact header
+- Follow-output scrolling that pauses when the user scrolls upward
+- Revision history, reversion, copying, export, and configurable offloading
+- A maximized horizontal layout and VoxBridge Compose visual identity
+
+### Speech recognition and recording
+
+- On-device whisper.cpp speech recognition loaded through the VoxBridge runtime
+- Automatic CPU and graphics capability detection with appropriate engine
+  selection, graphics acceleration, and CPU fallback
+- Model download, initialization, warmup, transcription, and error progress
+- Start and stop recording directly from Compose, gated until the complete
+  processing pipeline is ready
+- Press-to-toggle, hold-to-record, and continuous listening workflows
+- Continuous-speech segmentation with configurable silence timing and retained
+  context between utterances
+- Microphone selection, sensitivity adjustment, and microphone testing
+- Windows and Linux global-shortcut and permission integration
+
+### Text refinement and agents
+
+- Embedded in-process refinement through VoxBridge and llama.cpp
+- Ollama refinement on the same computer or another machine on the local
+  network; Ollama receives text, not recorded audio
+- Ordered agents with names, prompts, fidelity safeguards, speed settings,
+  enable/disable controls, and reusable profiles
+- Comprehensive Rewrite as the default profile, including contextual correction
+  of likely speech-recognition errors
+- Sequential multi-agent execution, per-stage progress, acceptance safeguards,
+  recomputation, and earlier-segment correction
+- Optional bounded saved-history context per agent
+- Automatic download and preload of the default embedded model
+
+### Privacy, history, and offloading
+
+- Private mode that prevents new history, diagnostic session logs, and recording
+  WAV files from being saved
+- Configurable history and recording-log retention, including forever for
+  history; WAV recording logs remain disabled by default
+- A default offload folder plus multiple saved destinations selectable from the
+  Compose toolbar
+- Session-specific destinations with optional remembered selection
+- `--offload-location <path>` and `--offload-location=<path>` launch arguments
+  for a temporary custom destination without replacing the saved default
+- Native folder selection and offloads containing raw transcript, refined text,
+  and optionally the matching source WAV
+
+### Status and desktop integration
+
+- Organized General, Text refinement, Agents, Speech recognition, Audio, and
+  Data and logs settings
+- Processor, graphics adapter, system memory, graphics memory, Vulkan, request,
+  word, agent, timing, cache, and acceptance reporting
+- Privacy-conscious bug-report preparation with local-path redaction and a
+  review step before opening GitHub
+- Windows taskbar indicators for recording and transcription activity
+- Installed/latest version information, changelog access, and repository and
+  release links, with optional automatic startup checks
+- Destructive reset with an explicit warning covering downloaded models, custom
+  agents, history, recordings, logs, saved locations, and local settings
+- About workspace with hardware information, project/support links, license
+  details, bug reporting, and prominent FOSS Voquill attribution
+
+### Launch with a custom offload folder
+
+Set a destination for one session without changing the saved default:
+
+```text
+"VoxBridge Compose.exe" --offload-location "D:\Transcripts\Session A"
+voxbridge-compose --offload-location=/mnt/transcripts/session-a
+```
+
+Both `--offload-location <path>` and `--offload-location=<path>` are supported.
+The launch argument takes priority for that session only.
+
 ## Roadmap
 
 - Whole-pipeline profiles
