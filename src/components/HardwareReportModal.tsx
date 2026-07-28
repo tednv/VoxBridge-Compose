@@ -24,6 +24,7 @@ export function HardwareReportModal({ onClose }: HardwareReportModalProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [privacyReviewed, setPrivacyReviewed] = useState(false);
 
   useEffect(() => {
     invoke<string>('get_hardware_report')
@@ -60,8 +61,9 @@ export function HardwareReportModal({ onClose }: HardwareReportModalProps) {
   return (
     <Modal title="Report hardware" onClose={onClose} maxWidth="560px">
       <div style={{ fontSize: tokens.typography.sizeSm, color: tokens.colors.textSecondary, lineHeight: 1.5 }}>
-        Review the sanitized processor, graphics, operating-system, and recent graphics-failure details below.
-        Nothing is submitted until you choose to open GitHub and publish the issue.
+        Automatic redaction is a safety aid, not a guarantee. Review every line below before opening GitHub.
+        Remove names, local paths, network details, recordings, transcripts, credentials, and anything else
+        that could identify you or your computer. Nothing is submitted automatically.
       </div>
 
       {loading ? (
@@ -94,12 +96,33 @@ export function HardwareReportModal({ onClose }: HardwareReportModalProps) {
         />
       )}
 
+      <label
+        style={{
+          display: 'flex',
+          alignItems: 'flex-start',
+          gap: tokens.spacing.xs,
+          color: tokens.colors.textSecondary,
+          fontSize: tokens.typography.sizeSm,
+          lineHeight: 1.4,
+          cursor: loading || !!error ? 'default' : 'pointer',
+        }}
+      >
+        <input
+          type="checkbox"
+          checked={privacyReviewed}
+          disabled={loading || !!error}
+          onChange={(event) => setPrivacyReviewed((event.currentTarget as HTMLInputElement).checked)}
+          style={{ marginTop: '2px', accentColor: tokens.colors.accentPrimary }}
+        />
+        I reviewed the complete report and removed private or identifying information.
+      </label>
+
       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: tokens.spacing.sm, marginTop: tokens.spacing.sm }}>
         <Button variant="ghost" onClick={handleCopy} disabled={loading || !!error}>
           {copied ? <IconCheck size={16} /> : <IconCopy size={16} />}
           {copied ? 'Copied' : 'Copy'}
         </Button>
-        <Button variant="secondary" onClick={handleOpenIssue} disabled={loading || !!error}>
+        <Button variant="secondary" onClick={handleOpenIssue} disabled={loading || !!error || !privacyReviewed}>
           <IconBrandGithub size={16} />
           Open bug report
         </Button>

@@ -1,15 +1,15 @@
-# Security policy
+# Security Policy
 
-## Supported versions
+## Supported Versions
 
 Security fixes are provided for the newest published release.
 
 | Version | Supported |
 | --- | --- |
-| 0.2.x | Yes |
-| Earlier versions | No |
+| 0.2.x | :white_check_mark: |
+| Earlier versions | :x: |
 
-## Report a vulnerability
+## Reporting a Vulnerability
 
 Please use
 [GitHub private vulnerability reporting](https://github.com/tednv/VoxBridge-Compose/security/advisories/new).
@@ -27,8 +27,15 @@ contents, unredacted diagnostics, local usernames, machine names, network
 addresses, or absolute filesystem paths. Replace sensitive values with neutral
 placeholders.
 
-You should receive an initial response within seven days. Please allow time to
-investigate and prepare a coordinated fix before public disclosure.
+You should receive an initial response within seven days. The response will
+confirm receipt, request any missing reproduction details, and provide the next
+expected update when possible.
+
+If the report is accepted, the maintainers will investigate impact, prepare a
+fix, and coordinate disclosure with the reporter. If the report is declined,
+the maintainers will explain why it is not considered an actionable
+vulnerability. Please allow time to investigate and publish a supported release
+before public disclosure.
 
 ## Scope
 
