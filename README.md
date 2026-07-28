@@ -31,6 +31,12 @@ No account or hosted speech service is required.
 
 ![VoxBridge Compose workspace](docs/screenshots/compose-workspace.png)
 
+#### Agent prompt
+
+Hover over the active agent to review its prompt and processing settings.
+
+![VoxBridge Compose agent prompt](docs/screenshots/compose-agent-prompt.png)
+
 ### Agents
 
 ![VoxBridge Compose agent settings](docs/screenshots/agent-settings.png)
