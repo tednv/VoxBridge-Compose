@@ -205,6 +205,25 @@ export function InitialSetupPage(props: InitialSetupPageProps) {
             </SettingRow>
 
             <SettingRow
+              title="Recognition backend"
+              description="Choose the VoxBridge speech-recognition runtime."
+            >
+              <SelectField
+                value={config.local_engine}
+                onChange={(value) => {
+                  onTouchSetup();
+                  onChangeConfig('local_engine', value);
+                }}
+                ariaLabel="Recognition backend"
+                searchable={false}
+                options={[
+                  { value: 'VoxBridge Faster Whisper', label: 'VoxBridge · Faster Whisper (Default)' },
+                  { value: 'VoxBridge', label: 'VoxBridge · whisper.cpp (Compatibility)' },
+                ]}
+              />
+            </SettingRow>
+
+            <SettingRow
               className={`permission-item ${isLocalModelReady ? 'ready' : ''}`}
               title="Speech recognition model"
               description={`Model ${config.local_model_size} converts recorded speech to text on this device.`}

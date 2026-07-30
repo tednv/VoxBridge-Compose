@@ -14,7 +14,8 @@ refine the result with an ordered set of local agents.
 
 ## Highlights
 
-- Local VoxBridge speech recognition with GPU acceleration and CPU fallback
+- Faster Whisper/CTranslate2 speech recognition by default, with
+  whisper.cpp/Vulkan retained as the broad-hardware compatibility fallback
 - Side-by-side raw transcript and refined text with independent scrolling
 - Embedded local text refinement or an Ollama server on the local network
 - Ordered, editable agent profiles with fidelity controls and optional context
@@ -47,18 +48,19 @@ Hover over the active agent to review its prompt and processing settings.
 
 ## Architecture
 
-VoxBridge Compose keeps speech processing local and separates the pipeline into
-three layers:
+VoxBridge Compose keeps speech processing local and separates product workflow
+from inference-runtime details:
 
-1. **Speech recognition:** whisper.cpp converts recorded audio into a raw
-   transcript.
-2. **Hardware mapping:** the VoxBridge runtime detects the available CPU and
-   graphics capabilities, then loads the appropriate whisper.cpp and embedded
-   model engine variants.
-3. **Text refinement:** configurable agents clean or rewrite the transcript
-   using either the bundled local model or a user-selected Ollama model. Ollama
-   may run on the same computer or on another machine reachable over the local
-   network.
+1. **Compose application:** owns microphone capture, utterance ordering,
+   continuous-recording policy, raw and refined documents, agents, history,
+   offloading, status, and desktop behavior.
+2. **VoxBridge runtime:** presents a stable Rust-facing boundary over backend
+   discovery, hardware capabilities, model lifecycle, warmup, cancellation,
+   caching, fallback, and normalized results.
+3. **Established inference backends:** Faster Whisper/CTranslate2 is the default,
+   efficient speech-recognition path using CUDA or optimized processor inference;
+   whisper.cpp remains the compact, broad-hardware compatibility fallback.
+   Embedded llama.cpp or a user-selected Ollama server performs text refinement.
 
 Audio is not sent to Ollama. Ollama receives text only when it is selected as
 the refinement provider. Users of a network Ollama server are responsible for
@@ -77,6 +79,12 @@ unsupported rewrites. This design is informed by the LocalAgreement research beh
 original to VoxBridge Compose. See [NOTICE.md](NOTICE.md) for full credit and
 licensing context, including the earlier incremental-recognition stability work
 and bounded-revision research that also informed the design.
+
+VoxBridge is deliberately not a universal AI-provider gateway. Projects such as
+LiteLLM and LocalAI already serve that category. Its narrower purpose is to keep
+the local speech-recognition and refinement backends required by Compose behind
+one coherent lifecycle and result contract. VoxBridge reuses inference projects;
+it does not claim to implement Whisper, CTranslate2, or llama.cpp inference.
 
 ## Status
 
@@ -102,7 +110,8 @@ and cross-platform integrations—while introducing the following:
 
 ### Speech recognition and recording
 
-- On-device whisper.cpp speech recognition loaded through the VoxBridge runtime
+- Faster Whisper/CTranslate2 speech recognition by default, with whisper.cpp
+  available through the VoxBridge runtime as the compatibility fallback
 - Automatic CPU and graphics capability detection with appropriate engine
   selection, graphics acceleration, and CPU fallback
 - Model download, initialization, warmup, transcription, and error progress
@@ -191,12 +200,18 @@ The launch argument takes priority for that session only.
 - Drag-and-drop agent ordering
 - GitHub profile import and updates
 - Per-agent model and provider selection
+- Reviewable agent-to-agent prompt adaptation, allowing designated agents to propose
+  improvements to later agents' prompts using chain results and feedback. Changes
+  must be bounded, versioned, reversible, auditable, and require explicit user
+  approval before becoming persistent defaults.
 - User-facing rerun and cancellation controls
 - Editable raw-transcript and refined-text panes
 - Draft-and-apply saving for agent edits
-- Optional Faster Whisper/CTranslate2 speech-recognition backend with managed model
-  downloads, CUDA/CPU capability detection, safe utterance-boundary switching, and
-  the existing VoxBridge Vulkan backend retained as the broad-compatibility default
+- Complete portable packaging for the supported Faster Whisper/CTranslate2 backend,
+  including managed runtime/model downloads, CUDA and processor capability
+  detection, progress/cancellation, and safe
+  utterance-boundary switching. Retain whisper.cpp/Vulkan as the compact,
+  broad-compatibility default.
 - Bundled Space Grotesk typography
 - Removal of dormant legacy cloud and API code
 - Comment, naming, encoding, and unused-code cleanup

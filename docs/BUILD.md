@@ -96,6 +96,22 @@ When running VoxBridge Compose on Linux, you may see a warning in the terminal:
 2. **Builds Frontend** - Runs `npm run build` (type-check + Vite build).
 3. **Builds Application** - Runs `tauri build` to create the final executable and installers.
 
+## Optional Faster Whisper runtime
+
+Faster Whisper/CTranslate2 is the default recognition backend owned by the
+separate VoxBridge runtime. Portable installation and release packaging are
+still being completed; source builds must prepare its managed runtime separately.
+The compact whisper.cpp engine variants remain available as the compatibility
+fallback.
+
+Development copies of the optional backend require a managed Python runtime,
+Faster Whisper, CTranslate2, a separate CTranslate2-format model directory, and
+the appropriate CUDA runtime libraries for NVIDIA graphics execution. Do not
+point a distributable build at a developer-machine Python installation or an
+absolute local path. Portable runtime installation, verification, progress,
+uninstallation, and Windows/Linux packaging must be completed before this
+backend is release-ready.
+
 ## Output
 
 After a successful build, you can find the artifacts in:

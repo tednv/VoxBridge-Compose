@@ -1,7 +1,9 @@
 use crate::audio;
 use crate::config::Config;
 use crate::hotkey::HardwareHotkey;
-use crate::local_whisper::{VoxBridgeEngineCache, WhisperEngineCache};
+use crate::local_whisper::{
+    FasterWhisperEngineCache, VoxBridgeEngineCache, WhisperEngineCache,
+};
 use crate::platform;
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, Mutex};
@@ -36,6 +38,7 @@ pub struct AppState {
     /// with automatic fall-through to whisper-rs on any failure. `None` cached entry
     /// just means "not loaded/available yet", not an error.
     pub voxbridge_engine: VoxBridgeEngineCache,
+    pub faster_whisper_engine: FasterWhisperEngineCache,
     #[cfg(target_os = "linux")]
     pub hotkey_engine_cancel: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
     #[cfg(target_os = "linux")]
@@ -131,6 +134,7 @@ impl Default for AppState {
             whisper_load_generation: Arc::new(AtomicU64::new(0)),
             whisper_last_gpu_error: Arc::new(Mutex::new(None)),
             voxbridge_engine: Arc::new(Mutex::new(None)),
+            faster_whisper_engine: Arc::new(Mutex::new(None)),
             #[cfg(target_os = "linux")]
             hotkey_engine_cancel: Arc::new(Mutex::new(None)),
             #[cfg(target_os = "linux")]

@@ -50,8 +50,8 @@ process.env.GGML_NATIVE = "OFF";
 // expecting normal linking, so this breaks at link time (LNK1181: cannot open input
 // file 'ggml-cpu.lib'). Fixing it would require patching whisper-rs itself (not just
 // whisper-rs-sys) to route those calls through ggml's dynamic backend registry API
-// instead of direct symbols. See docs/session-history and vendor/whisper-rs-sys (kept
-// for reference / a future attempt, not currently used — see the commented-out
+// instead of direct symbols. See vendor/whisper-rs-sys (kept for reference / a
+// future attempt, not currently used — see the commented-out
 // [patch.crates-io] in Cargo.toml).
 
 try {

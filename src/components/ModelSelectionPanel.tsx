@@ -50,8 +50,7 @@ export function ModelSelectionPanel({
                   searchable={false}
                   ariaLabel="Local model"
                   options={availableModels
-                    // VoxBridge uses the shared local speech-model format.
-                    .filter((model) => model.engine === localEngine || localEngine === 'VoxBridge')
+                    .filter((model) => model.engine === localEngine)
                     .map((model) => ({
                       value: model.size,
                       label: `${model.label} ${model.recommended ? '(Recommended) ' : ''}(${Math.round(model.file_size / 1024 / 1024)}MB)`,
@@ -64,11 +63,16 @@ export function ModelSelectionPanel({
                 <IconInfoCircle size={20} />
               </Button>
             </div>
-            {!modelStatus[localModelSize] && (
+            {!modelStatus[localModelSize] && !availableModels.find((model) => model.size === localModelSize)?.managed && (
               <div style={actionButtonRowStyle}>
                 <Button variant="secondary" size={actionButtonSize} onClick={() => onDownloadModel(localModelSize)} disabled={isDownloading}>
                   {isDownloading ? '...' : 'Download'}
                 </Button>
+              </div>
+            )}
+            {availableModels.find((model) => model.size === localModelSize)?.managed && !modelStatus[localModelSize] && (
+              <div style={{ fontSize: tokens.typography.sizeXs, color: tokens.colors.accentHover, textAlign: 'center' }}>
+                VoxBridge will download and prepare this model when selected.
               </div>
             )}
           </>

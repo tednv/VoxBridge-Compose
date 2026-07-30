@@ -94,12 +94,13 @@ pub fn build_app_state(initial_config: &Config) -> AppState {
 /// (e.g. insufficient VRAM) in `whisper_preload_error` for the UI to surface.
 pub fn spawn_whisper_preload(app_handle: tauri::AppHandle) {
     let state = app_handle.state::<AppState>();
-    let (transcription_mode, model_size, use_gpu) = {
+    let (transcription_mode, model_size, use_gpu, local_engine) = {
         let config = state.config.lock().unwrap();
         (
             config.transcription_mode.clone(),
             config.local_model_size.clone(),
             config.enable_gpu,
+            config.local_engine.clone(),
         )
     };
 
@@ -115,7 +116,7 @@ pub fn spawn_whisper_preload(app_handle: tauri::AppHandle) {
     let is_downloaded = crate::model_manager::ModelManager::new()
         .map(|manager| manager.is_model_downloaded(&model_size))
         .unwrap_or(false);
-    if !is_downloaded {
+    if !is_downloaded && !local_whisper::is_faster_whisper_engine(&local_engine) {
         crate::log_info!(
             "Skipping preload for '{}': not downloaded yet",
             model_size
@@ -124,6 +125,7 @@ pub fn spawn_whisper_preload(app_handle: tauri::AppHandle) {
     }
 
     let voxbridge_engine = state.voxbridge_engine.clone();
+    let faster_whisper_engine = state.faster_whisper_engine.clone();
     let voxbridge_resource_base = app_handle.path().resource_dir().ok();
     let whisper_loading = state.whisper_loading.clone();
     let whisper_preload_error = state.whisper_preload_error.clone();
@@ -143,7 +145,9 @@ pub fn spawn_whisper_preload(app_handle: tauri::AppHandle) {
         generation
     );
 
-    let loading_status = if use_gpu {
+    let loading_status = if !is_downloaded {
+        "Downloading speech model"
+    } else if use_gpu {
         "Loading (GPU)"
     } else {
         "Loading (CPU)"
@@ -153,22 +157,39 @@ pub fn spawn_whisper_preload(app_handle: tauri::AppHandle) {
         crate::app::status::emit_status_update(loading_status).await;
         let _ = app_handle.emit("whisper-preload-status", serde_json::json!({ "loading": true }));
 
-        let voxbridge_model_size = model_size.clone();
-        let voxbridge_result = tokio::task::spawn_blocking(move || {
-            local_whisper::preload_voxbridge_model(
-                &voxbridge_engine,
-                &voxbridge_model_size,
-                use_gpu,
-                voxbridge_resource_base.as_deref(),
-            )
+        let preload_model_size = model_size.clone();
+        let preload_engine = local_engine.clone();
+        let voxbridge_result = tokio::task::spawn_blocking(move || -> Result<local_whisper::LoadOutcome, String> {
+            if local_whisper::is_faster_whisper_engine(&preload_engine) {
+                let actual_gpu = local_whisper::preload_faster_whisper_model(
+                    &faster_whisper_engine,
+                    &preload_model_size,
+                    use_gpu,
+                    voxbridge_resource_base.as_deref(),
+                )?;
+                Ok(local_whisper::LoadOutcome {
+                    use_gpu: actual_gpu,
+                    fell_back_from_gpu: (use_gpu && !actual_gpu).then(|| {
+                        "CTranslate2 CUDA runtime was unavailable".to_string()
+                    }),
+                })
+            } else {
+                local_whisper::preload_voxbridge_model(
+                    &voxbridge_engine,
+                    &preload_model_size,
+                    use_gpu,
+                    voxbridge_resource_base.as_deref(),
+                )?;
+                Ok(local_whisper::LoadOutcome {
+                    use_gpu,
+                    fell_back_from_gpu: None,
+                })
+            }
         })
         .await;
 
         let result: Result<local_whisper::LoadOutcome, String> = match voxbridge_result {
-            Ok(Ok(())) => Ok(local_whisper::LoadOutcome {
-                use_gpu,
-                fell_back_from_gpu: None,
-            }),
+            Ok(Ok(outcome)) => Ok(outcome),
             Ok(Err(error)) => {
                 crate::log_warn!("VoxBridge preload failed: {}", error);
                 Err(error)

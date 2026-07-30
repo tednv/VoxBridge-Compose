@@ -1,6 +1,6 @@
 [package]
 name = "voxbridge-compose"
-version = "0.2.0"
+version = "0.3.0"
 description = "GPU-first local transcription and composition workspace"
 authors = ["VoxBridge Compose contributors"]
 license = "AGPL-3.0-only"
@@ -30,7 +30,10 @@ env_logger = "0.11.8"
 chrono = { version = "0.4", features = ["serde"] }
 libloading = "0.9.0"
 arboard = "3.6.1"
-whisper-rs = { version = "0.16.0", features = ["vulkan"] }
+# Local experimental build: VoxBridge still supplies the production Vulkan path.
+# Keeping the emergency whisper-rs fallback CPU-only avoids whisper-rs-sys's Windows
+# Vulkan shader-generator path failure while testing the Faster Whisper backend.
+whisper-rs = "0.16.0"
 voxbridge = { path = "../voxbridge" }
 tokio-util = { version = "0.7", features = ["io"] }
 sha2 = "0.11"
@@ -63,6 +66,7 @@ windows = { version = "0.62", features = [
     "Win32_System_Com_StructuredStorage",
     "Win32_System_Variant",
     "Win32_System_SystemInformation",
+    "Win32_System_Threading",
     "Win32_UI_Shell_PropertiesSystem",
     "Win32_Devices_Properties",
     "Win32_Devices_FunctionDiscovery",
@@ -83,7 +87,6 @@ path = "src/main.rs"
 # architectural wall (whisper-rs's Rust bindings call ggml-cpu/ggml-vulkan symbols
 # directly, which don't get import libraries under GGML_BACKEND_DL's MODULE-library
 # build). Would need whisper-rs itself patched too, not just this crate. Left the vendor
-# copy and this commented-out patch in place for a future attempt — see
-# docs/session-history for the full investigation.
+# copy and this commented-out patch in place for a future attempt.
 # [patch.crates-io]
 # whisper-rs-sys = { path = "vendor/whisper-rs-sys" }

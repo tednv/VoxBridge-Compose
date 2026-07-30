@@ -158,6 +158,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             start_recording,
             stop_recording,
+            get_current_mic_level,
             get_config,
             save_config,
             reset_application_to_defaults,

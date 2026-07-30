@@ -6,7 +6,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { getVersion } from '@tauri-apps/api/app';
 import { disable as disableAutostart, enable as enableAutostart, isEnabled as isAutostartEnabled } from '@tauri-apps/plugin-autostart';
 import { open } from '@tauri-apps/plugin-shell';
-import { IconActivity, IconFileText, IconHistory, IconInfoCircle, IconMinus, IconSettings, IconShieldLock, IconSquare, IconX } from '@tabler/icons-preact';
+import { IconActivity, IconFileText, IconHistory, IconInfoCircle, IconMicrophone, IconMinus, IconPlayerStopFilled, IconSettings, IconShieldLock, IconSquare, IconTrash, IconX } from '@tabler/icons-preact';
 import { Button } from './components/Button.tsx';
 import { ModelInfoModal } from './components/ModelInfoModal.tsx';
 import { HardwareReportModal } from './components/HardwareReportModal.tsx';
@@ -201,8 +201,8 @@ function App() {
     api_url: 'https://api.openai.com/v1/audio/transcriptions',
     api_model: 'whisper-1',
     transcription_mode: 'Local',
-    local_model_size: 'base',
-    local_engine: 'VoxBridge',
+    local_model_size: 'fw-distil-small.en',
+    local_engine: 'VoxBridge Faster Whisper',
     hotkey: 'ctrl+shift+space',
     hotkey_mode: 'sticky',
     continuous_silence_ms: 900,
@@ -253,6 +253,10 @@ function App() {
   const [availableModels, setAvailableModels] = useState<any[]>([]);
   const [downloadProgress, setDownloadProgress] = useState<number>(0);
   const [isDownloading, setIsDownloading] = useState(false);
+  const [recordingCommandPending, setRecordingCommandPending] = useState(false);
+  const [liveMicLevel, setLiveMicLevel] = useState(0);
+  const [showClearWorkspaceModal, setShowClearWorkspaceModal] = useState(false);
+  const [clearWorkspaceSignal, setClearWorkspaceSignal] = useState(0);
   const [isModelLoading, setIsModelLoading] = useState(false);
   const [modelLoadError, setModelLoadError] = useState<string | null>(null);
   const [isComposeModelLoading, setIsComposeModelLoading] = useState(true);
@@ -512,6 +516,10 @@ function App() {
           setModelLoadError(payload.error ?? null);
           if (payload.error) {
             showToast(`Failed to preload speech-recognition model: ${payload.error}`, 'error');
+          } else {
+            // Managed backends may finish downloading their model during preload.
+            // Refresh readiness so recording becomes available without a restart.
+            void loadModels();
           }
         }
       }
@@ -664,7 +672,6 @@ function App() {
       setConfig({
         ...savedConfig,
         transcription_mode: 'Local',
-        local_engine: 'VoxBridge',
         output_method: 'Compose',
         typing_speed_interval: Math.round(savedConfig.typing_speed_interval * 1000)
       });
@@ -765,7 +772,6 @@ function App() {
       const configToSave = {
         ...configToPersist,
         transcription_mode: 'Local',
-        local_engine: 'VoxBridge',
         typing_speed_interval: configToPersist.typing_speed_interval / 1000,
         openai_api_key: configToPersist.openai_api_key || 'your_api_key_here',
       };
@@ -861,9 +867,55 @@ function App() {
   };
 
   const isLocalModelReady = !!modelStatus[config.local_model_size];
+  const composeEnginesReady = isLocalModelReady
+    && !isModelLoading
+    && !modelLoadError
+    && !isComposeModelLoading
+    && !composeModelLoadError
+    && (config.compose_backend === 'embedded'
+      ? Boolean(config.compose_model_path)
+      : Boolean(config.compose_ollama_model));
   const isAudioDeviceReady = availableMics.length > 0 && !!config.audio_device;
   const isPortalSetupReady = !!permissions && permissions.audio && permissions.shortcuts;
   const isSystemManagedShortcut = portalVersion >= 1;
+
+  const toggleComposeRecording = () => {
+    const isRecording = currentStatus === 'Recording';
+    setRecordingCommandPending(true);
+    invoke(isRecording ? 'stop_recording' : 'start_recording')
+      .catch((error) => console.error(`Failed to ${isRecording ? 'stop' : 'start'} recording:`, error))
+      .finally(() => setRecordingCommandPending(false));
+  };
+
+  useEffect(() => {
+    let active = true;
+    const refreshLevel = () => {
+      invoke<number>('get_current_mic_level')
+        .then((level) => {
+          if (active) setLiveMicLevel(Math.max(0, Math.min(1, level)));
+        })
+        .catch(() => {
+          if (active) setLiveMicLevel(0);
+        });
+    };
+    refreshLevel();
+    const timer = window.setInterval(refreshLevel, 80);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  const clearComposeWorkspace = async () => {
+    try {
+      await invoke('clear_compose_text');
+      setClearWorkspaceSignal((value) => value + 1);
+      setShowClearWorkspaceModal(false);
+      showToast('Workspace cleared', 'success');
+    } catch (error) {
+      showToast(`Failed to clear workspace: ${error}`, 'error');
+    }
+  };
 
   const openDebugFolder = async () => {
     try {
@@ -1230,6 +1282,13 @@ function App() {
 
   return (
     <div style={appShellStyle}>
+      <style>{`
+        .workspace-clear-action:hover:not(:disabled) {
+          color: #fff7f7 !important;
+          background: rgba(239, 68, 68, 0.82) !important;
+          border-color: rgba(255, 120, 120, 0.72) !important;
+        }
+      `}</style>
       <div style={titleBarStyle} onMouseDown={handleTitleBarMouseDown} onDblClick={handleTitleBarDoubleClick}>
         <div style={{ ...titleBarTitleStyle, display: 'flex', alignItems: 'center', gap: '9px' }}>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: '2px', height: '16px' }} aria-hidden="true">
@@ -1323,7 +1382,7 @@ function App() {
             )}
             <button
               type="button"
-              style={{ ...getTopTabStyle('settings'), marginLeft: 'auto', order: 4 }}
+              style={{ ...getTopTabStyle('settings'), order: 4 }}
               onClick={() => { logUI('🖱️ Button clicked: Settings Tab'); navigate('settings'); }}
               onMouseEnter={() => setHoveredTopTab('settings')}
               onMouseLeave={() => setHoveredTopTab(null)}
@@ -1331,11 +1390,78 @@ function App() {
             >
               <span style={{ display: 'flex', alignItems: 'center', gap: '7px' }}><IconSettings size={15} /> Settings</span>
             </button>
+            <div style={{ order: 5, marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+              <span
+                title={`Speech recognition: ${config.local_engine} · ${config.local_model_size}
+Text refinement: ${config.compose_backend === 'embedded'
+  ? `Embedded · ${(config.compose_model_path.split(/[\\/]/).pop() || 'model selected')}`
+  : `Ollama · ${config.compose_ollama_model || 'model not selected'}`}`}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: '7px', color: tokens.colors.textMuted, fontSize: tokens.typography.sizeXs }}
+              >
+                <span style={{
+                  width: '7px',
+                  height: '7px',
+                  borderRadius: '50%',
+                  background: currentStatus === 'Error'
+                    ? tokens.colors.error
+                    : currentStatus === 'Ready'
+                      ? tokens.colors.success
+                      : tokens.colors.accentHover,
+                }} />
+                {currentStatus}
+              </span>
+              <div
+                title="Live microphone input level"
+                aria-label={`Microphone level ${Math.round(liveMicLevel * 100)} percent`}
+                style={{
+                  position: 'relative',
+                  display: 'flex',
+                  alignItems: 'flex-end',
+                  width: '12px',
+                  height: '32px',
+                  padding: '2px',
+                  overflow: 'hidden',
+                  borderRadius: '5px',
+                  border: '1px solid rgba(255,255,255,.12)',
+                  background: 'repeating-linear-gradient(to top, rgba(255,255,255,.04) 0 5px, rgba(255,255,255,.13) 5px 6px)',
+                  boxShadow: liveMicLevel > 0.04 ? '0 0 10px rgba(255,184,0,.12)' : 'none',
+                }}
+              >
+                <div style={{
+                  width: '100%',
+                  height: `${Math.max(4, liveMicLevel * 100)}%`,
+                  borderRadius: '3px',
+                  background: liveMicLevel > 0.9 ? tokens.colors.error : liveMicLevel > 0.7 ? tokens.colors.accentHover : tokens.colors.success,
+                  transition: 'height 70ms linear, background 120ms ease',
+                }} />
+              </div>
+              <Button
+                variant={currentStatus === 'Recording' ? 'danger' : 'secondary'}
+                size="md"
+                onClick={toggleComposeRecording}
+                disabled={recordingCommandPending || (!composeEnginesReady && currentStatus !== 'Recording') || (!['Ready', 'Recording'].includes(currentStatus))}
+                title={composeEnginesReady
+                  ? `${currentStatus === 'Recording' ? 'Stop recording' : 'Start recording'}${config.hotkey ? ` · ${config.hotkey}` : ''}`
+                  : 'Speech recognition and text refinement must be ready'}
+              >
+                {currentStatus === 'Recording' ? <IconPlayerStopFilled size={14} /> : <IconMicrophone size={14} />}
+                {currentStatus === 'Recording' ? 'Stop' : 'Start'}
+              </Button>
+              <Button
+                variant="ghost"
+                size="md"
+                onClick={() => setShowClearWorkspaceModal(true)}
+                title="Clear all workspace"
+                className="workspace-clear-action"
+              >
+                <IconTrash size={15} />
+              </Button>
+            </div>
             <button
               type="button"
               style={{
                 ...getTopTabStyle('settings'),
-                order: 5,
+                order: 6,
                 background: !config.enable_history ? 'rgba(155,124,255,.14)' : 'transparent',
                 borderColor: !config.enable_history ? 'rgba(155,124,255,.34)' : 'transparent',
                 color: !config.enable_history ? tokens.colors.privacy : tokens.colors.textSecondary,
@@ -1348,7 +1474,7 @@ function App() {
             </button>
             <button
               type="button"
-              style={{ ...getTopTabStyle('about'), order: 6 }}
+              style={{ ...getTopTabStyle('about'), order: 7 }}
               onClick={() => { logUI('Button clicked: About tab'); navigate('about'); }}
               onMouseEnter={() => setHoveredTopTab('about')}
               onMouseLeave={() => setHoveredTopTab(null)}
@@ -1448,12 +1574,7 @@ function App() {
                   navigate('settings');
                 }}
                 currentStatus={currentStatus}
-                enginesReady={
-                  isLocalModelReady
-                  && !isModelLoading
-                  && !isComposeModelLoading
-                  && (config.compose_backend === 'embedded' ? Boolean(config.compose_model_path) : Boolean(config.compose_ollama_model))
-                }
+                clearWorkspaceSignal={clearWorkspaceSignal}
               />
             )}
 
@@ -1570,6 +1691,32 @@ function App() {
             This permanently deletes downloaded speech-recognition models, custom agents and profiles, recording logs, diagnostics, transcription history, and local overrides. External text-refinement model files are not deleted, but their configured paths are removed.
           </p>
           <p style={modalShortcutNoteStyle}>This action cannot be undone.</p>
+        </Modal>
+      )}
+
+      {showClearWorkspaceModal && (
+        <Modal
+          title="Clear workspace?"
+          onClose={() => setShowClearWorkspaceModal(false)}
+          maxWidth="500px"
+          footerAlign="center"
+          footer={
+            <>
+              <Button variant="ghost" onClick={() => setShowClearWorkspaceModal(false)}>
+                Cancel
+              </Button>
+              <Button variant="danger" onClick={() => void clearComposeWorkspace()}>
+                Clear workspace
+              </Button>
+            </>
+          }
+        >
+          <p style={modalTextIntroStyle}>
+            Clear the current raw transcript, refined text, and contribution revisions?
+          </p>
+          <p style={modalShortcutNoteStyle}>
+            Offloaded files and saved History are not deleted.
+          </p>
         </Modal>
       )}
 

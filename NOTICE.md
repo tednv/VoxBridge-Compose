@@ -23,6 +23,12 @@ The application uses the separately maintained, MIT-licensed
 [VoxBridge](https://github.com/tednv/VoxBridge) runtime. VoxBridge incorporates
 the MIT-licensed [whisper.cpp](https://github.com/ggerganov/whisper.cpp) and
 [llama.cpp](https://github.com/ggml-org/llama.cpp) projects as submodules.
+Its Faster Whisper speech-recognition path integrates the independently
+maintained MIT-licensed
+[Faster Whisper](https://github.com/SYSTRAN/faster-whisper) package and
+[CTranslate2](https://github.com/OpenNMT/CTranslate2) inference engine. VoxBridge
+provides lifecycle and result adaptation around those projects; it does not claim
+their inference implementations as original work.
 
 The default embedded refinement model is the Apache-2.0-licensed
 [Qwen3 4B Instruct 2507 model](https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507),

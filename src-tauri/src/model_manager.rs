@@ -12,6 +12,7 @@ pub struct ModelInfo {
     pub label: String,
     pub description: String,
     pub recommended: bool,
+    pub managed: bool,
 }
 
 pub struct ModelManager {
@@ -19,6 +20,35 @@ pub struct ModelManager {
 }
 
 impl ModelManager {
+    fn contains_file_named(root: &std::path::Path, file_name: &str) -> bool {
+        let Ok(entries) = std::fs::read_dir(root) else {
+            return false;
+        };
+        entries.flatten().any(|entry| {
+            let path = entry.path();
+            if path.is_dir() {
+                Self::contains_file_named(&path, file_name)
+            } else {
+                path.file_name().and_then(|name| name.to_str()) == Some(file_name)
+            }
+        })
+    }
+
+    fn file_size_named(root: &std::path::Path, file_name: &str) -> Option<u64> {
+        let entries = std::fs::read_dir(root).ok()?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if let Some(size) = Self::file_size_named(&path, file_name) {
+                    return Some(size);
+                }
+            } else if path.file_name().and_then(|name| name.to_str()) == Some(file_name) {
+                return path.metadata().ok().map(|metadata| metadata.len());
+            }
+        }
+        None
+    }
+
     pub fn new() -> Result<Self, String> {
         let models_dir = dirs::config_dir()
             .ok_or("Could not find config directory")?
@@ -43,6 +73,7 @@ impl ModelManager {
                 sha256: "be07098a4cc50130a511ca096303ad371c513297a7d4a093047d9ca4378f8776".to_string(),
                 description: "Lightning fast, best for simple commands.".to_string(),
                 recommended: false,
+                managed: false,
             },
             ModelInfo {
                 engine: "VoxBridge".to_string(),
@@ -53,6 +84,7 @@ impl ModelManager {
                 sha256: "e8a676964fd3f78b021a385f078a18863712ca10fdc907a685eee9c0e71d7a62".to_string(),
                 description: "Perfect balance of speed and high accuracy.".to_string(),
                 recommended: true,
+                managed: false,
             },
             ModelInfo {
                 engine: "VoxBridge".to_string(),
@@ -63,6 +95,7 @@ impl ModelManager {
                 sha256: "60ed30914c83ad34005b63359d992f802773d57864f7df26e95261895697d74d".to_string(),
                 description: "Standard choice for general dictation.".to_string(),
                 recommended: false,
+                managed: false,
             },
             ModelInfo {
                 engine: "VoxBridge".to_string(),
@@ -73,6 +106,7 @@ impl ModelManager {
                 sha256: "1be3a305f560a8cc0937f268b7ca67270b240561570d55e09d949cf94edb54d1".to_string(),
                 description: "Great accuracy for complex vocabulary.".to_string(),
                 recommended: false,
+                managed: false,
             },
             ModelInfo {
                 engine: "VoxBridge".to_string(),
@@ -83,6 +117,40 @@ impl ModelManager {
                 sha256: "1be3a305f560a8cc0937f268b7ca67270b240561570d55e09d949cf94edb54d1".to_string(),
                 description: "Highest accuracy. Needs a powerful computer or GPU.".to_string(),
                 recommended: false,
+                managed: false,
+            },
+            ModelInfo {
+                engine: "VoxBridge Faster Whisper".to_string(),
+                size: "fw-distil-small.en".to_string(),
+                label: "Distil-Small (English)".to_string(),
+                file_size: 330_000_000,
+                download_url: String::new(),
+                sha256: String::new(),
+                description: "Default CTranslate2 model. Fast and efficient for English dictation.".to_string(),
+                recommended: true,
+                managed: true,
+            },
+            ModelInfo {
+                engine: "VoxBridge Faster Whisper".to_string(),
+                size: "fw-small.en".to_string(),
+                label: "Small (English)".to_string(),
+                file_size: 500_000_000,
+                download_url: String::new(),
+                sha256: String::new(),
+                description: "CTranslate2 model with higher accuracy and memory use.".to_string(),
+                recommended: false,
+                managed: true,
+            },
+            ModelInfo {
+                engine: "VoxBridge Faster Whisper".to_string(),
+                size: "fw-medium.en".to_string(),
+                label: "Medium (English)".to_string(),
+                file_size: 1_500_000_000,
+                download_url: String::new(),
+                sha256: String::new(),
+                description: "High-accuracy CTranslate2 model for capable systems.".to_string(),
+                recommended: false,
+                managed: true,
             },
         ]
     }
@@ -102,6 +170,18 @@ impl ModelManager {
     }
 
     pub fn is_model_downloaded(&self, model_size: &str) -> bool {
+        if let Some(model) = model_size.strip_prefix("fw-") {
+            let root = self.models_dir.join("faster-whisper").join(model);
+            let expected_size = Self::get_available_models()
+                .into_iter()
+                .find(|candidate| candidate.size == model_size)
+                .map(|candidate| candidate.file_size)
+                .unwrap_or(1);
+            let model_bytes = Self::file_size_named(&root, "model.bin").unwrap_or(0);
+            return Self::contains_file_named(&root, "config.json")
+                && Self::contains_file_named(&root, "tokenizer.json")
+                && model_bytes >= expected_size.saturating_mul(85) / 100;
+        }
         self.get_model_path(model_size).exists()
     }
 
@@ -118,6 +198,12 @@ impl ModelManager {
             .iter()
             .find(|m| m.size == model_size)
             .ok_or_else(|| format!("Model size {} not found", model_size))?;
+        if model_info.managed {
+            return Err(
+                "Faster Whisper models are downloaded and prepared by the VoxBridge runtime."
+                    .to_string(),
+            );
+        }
 
         let path = self.get_model_path(model_size);
 

@@ -357,14 +357,17 @@ async fn transcribe_and_deliver(
                 // Local Engine - keeps "Whisper.cpp" a clean, unmodified whisper-rs-only
                 // path for direct A/B comparison, rather than VoxBridge silently trying
                 // itself first regardless of the user's choice.
-                let (voxbridge_cache, voxbridge_resource_base) = if local_engine == "VoxBridge" {
-                    (
-                        app_state.as_ref().map(|state| state.voxbridge_engine.clone()),
-                        app_handle.path().resource_dir().ok(),
-                    )
-                } else {
-                    (None, None)
-                };
+                let voxbridge_resource_base = app_handle.path().resource_dir().ok();
+                let voxbridge_cache = (local_engine == "VoxBridge")
+                    .then(|| app_state.as_ref().map(|state| state.voxbridge_engine.clone()))
+                    .flatten();
+                let faster_whisper_cache = local_whisper::is_faster_whisper_engine(&local_engine)
+                    .then(|| {
+                        app_state
+                            .as_ref()
+                            .map(|state| state.faster_whisper_engine.clone())
+                    })
+                    .flatten();
 
                 match local_whisper::LocalWhisperService::new_full(
                     whisper_engine.clone(),
@@ -372,6 +375,7 @@ async fn transcribe_and_deliver(
                     use_gpu,
                     last_gpu_error,
                     voxbridge_cache,
+                    faster_whisper_cache,
                     voxbridge_resource_base,
                 ) {
                     Ok(service) => Box::new(service),

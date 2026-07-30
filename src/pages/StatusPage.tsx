@@ -68,6 +68,7 @@ interface MemoryStatus {
   gpuAvailableVramBytes?: number | null;
   systemMemoryTotalBytes?: number | null;
   systemMemoryAvailableBytes?: number | null;
+  systemCpuUsagePercent?: number | null;
   whisperEstimateBytes: number;
   composeEstimateBytes: number;
   composeMemorySource: string;
@@ -147,7 +148,10 @@ export function StatusPage({
   const systemAvailable = memory?.systemMemoryAvailableBytes ?? 0;
   const systemUsed = Math.max(0, systemTotal - systemAvailable);
   const systemPercent = systemTotal ? Math.min(100, (systemUsed / systemTotal) * 100) : 0;
+  const cpuPercent = Math.max(0, Math.min(100, memory?.systemCpuUsagePercent ?? 0));
   const graphicsTotal = memory?.dedicatedVramBytes ?? 0;
+  const graphicsActual = memory?.gpuCurrentUsageBytes ?? 0;
+  const graphicsActualPercent = graphicsTotal ? Math.min(100, (graphicsActual / graphicsTotal) * 100) : 0;
   // Keep this provider-sensitive: adapter-wide usage often remains resident for a
   // while after a backend switch and therefore looks frozen. The graph represents the
   // active VoxBridge pipeline allocation; local Ollama contributes its reported model
@@ -207,16 +211,29 @@ export function StatusPage({
         <section style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '12px' }}>
           <div style={{ padding: '15px 16px', border: '1px solid rgba(255,255,255,.08)', borderRadius: tokens.radii.panel, background: 'rgba(255,255,255,.012)' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'center' }}>
-              <span style={{ color: tokens.colors.textPrimary, fontSize: tokens.typography.sizeSm, fontWeight: 700 }}>System memory</span>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '7px', color: tokens.colors.textPrimary, fontSize: tokens.typography.sizeSm, fontWeight: 700 }}>
+                Processor activity
+                <HelpBubble label="Processor activity" text="Live activity across all logical processors. This is total system use, not only VoxBridge Compose." />
+              </span>
               <span style={{ color: tokens.colors.textMuted, fontFamily: tokens.typography.fontMono, fontSize: tokens.typography.sizeXs }}>
-                {systemTotal ? `${formatBytes(systemUsed)} / ${formatBytes(systemTotal)}` : 'Unavailable'}
+                {memory?.systemCpuUsagePercent != null ? `${cpuPercent.toFixed(1)}%` : 'Sampling'}
               </span>
             </div>
             <div style={{ height: '9px', marginTop: '12px', overflow: 'hidden', borderRadius: '999px', background: 'rgba(255,255,255,.07)' }}>
-              <div style={{ width: `${systemPercent}%`, height: '100%', borderRadius: 'inherit', background: 'linear-gradient(90deg, #ff8a00, #ffd966)', transition: 'width .25s ease' }} />
+              <div style={{ width: `${cpuPercent}%`, height: '100%', borderRadius: 'inherit', background: 'linear-gradient(90deg, #ff8a00, #ffd966)', transition: 'width .25s ease' }} />
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '8px', marginTop: '10px' }}>
+              <div style={{ padding: '8px 9px', borderRadius: '7px', background: 'rgba(255,138,0,.06)' }}>
+                <div style={{ color: tokens.colors.textMuted, fontSize: '10px' }}>Graphics / processor runs</div>
+                <div style={{ marginTop: '3px', color: tokens.colors.textPrimary, fontFamily: tokens.typography.fontMono, fontSize: '12px' }}>{stats?.gpuCount ?? 0} / {stats?.cpuCount ?? 0}</div>
+              </div>
+              <div style={{ padding: '8px 9px', borderRadius: '7px', background: 'rgba(255,184,0,.06)' }}>
+                <div style={{ color: tokens.colors.textMuted, fontSize: '10px' }}>Recognition average</div>
+                <div style={{ marginTop: '3px', color: tokens.colors.textPrimary, fontFamily: tokens.typography.fontMono, fontSize: '12px' }}>{formatDuration(transcriptionAverage)}</div>
+              </div>
             </div>
             <div style={{ marginTop: '8px', color: tokens.colors.textMuted, fontSize: '11px' }}>
-              {systemTotal ? `${systemPercent.toFixed(1)}% used · ${formatBytes(systemAvailable)} available` : 'System memory reporting is unavailable.'}
+              {requestCount.toLocaleString()} pipeline requests this session
             </div>
           </div>
 
@@ -245,8 +262,33 @@ export function StatusPage({
               </div>
             </div>
             <div style={{ marginTop: '8px', color: tokens.colors.textMuted, fontSize: '11px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-              {memory?.adapterName || 'Local graphics adapter not detected'}{memory?.gpuAvailableVramBytes ? ` · ${formatBytes(memory.gpuAvailableVramBytes)} available` : ''}
+              {memory?.adapterName || 'Local graphics adapter not detected'}
             </div>
+            {graphicsTotal > 0 && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', marginTop: '5px', color: tokens.colors.textMuted, fontSize: '10px' }}>
+                <span>Adapter allocation {formatBytes(graphicsActual)} · {graphicsActualPercent.toFixed(1)}%</span>
+                <span>{formatBytes(memory?.gpuAvailableVramBytes ?? 0)} available</span>
+              </div>
+            )}
+          </div>
+        </section>
+
+        <section style={{ padding: '15px 16px', border: '1px solid rgba(255,255,255,.08)', borderRadius: tokens.radii.panel, background: 'rgba(255,255,255,.012)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'center' }}>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '7px', color: tokens.colors.textPrimary, fontSize: tokens.typography.sizeSm, fontWeight: 700 }}>
+              System memory
+              <HelpBubble label="System memory" text="Live physical memory use for the entire computer. Local speech and embedded refinement models contribute to this total when they run on the processor." />
+            </span>
+            <span style={{ color: tokens.colors.textMuted, fontFamily: tokens.typography.fontMono, fontSize: tokens.typography.sizeXs }}>
+              {systemTotal ? `${formatBytes(systemUsed)} / ${formatBytes(systemTotal)}` : 'Unavailable'}
+            </span>
+          </div>
+          <div style={{ height: '9px', marginTop: '12px', overflow: 'hidden', borderRadius: '999px', background: 'rgba(255,255,255,.07)' }}>
+            <div style={{ width: `${systemPercent}%`, height: '100%', borderRadius: 'inherit', background: 'linear-gradient(90deg, #ff8a00, #ffd966)', transition: 'width .25s ease' }} />
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', marginTop: '8px', color: tokens.colors.textMuted, fontSize: '11px' }}>
+            <span>{systemTotal ? `${systemPercent.toFixed(1)}% used` : 'System memory reporting is unavailable.'}</span>
+            {systemTotal > 0 && <span>{formatBytes(systemAvailable)} available</span>}
           </div>
         </section>
 

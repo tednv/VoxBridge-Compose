@@ -222,10 +222,10 @@ fn default_transcription_mode() -> TranscriptionMode {
     TranscriptionMode::Local
 }
 fn default_local_model_size() -> String {
-    "base".to_string()
+    "fw-distil-small.en".to_string()
 }
 fn default_local_engine() -> String {
-    "VoxBridge".to_string()
+    "VoxBridge Faster Whisper".to_string()
 }
 fn default_hotkey() -> String {
     "ctrl+shift+space".to_string()

@@ -1052,6 +1052,24 @@ export function ConfigPage(props: ConfigPageProps) {
         )}
 
         <CollapsibleSection title="Speech recognition" isOpen={activeConfigSection === 'transcription'} onToggle={() => setActiveConfigSection(activeConfigSection === 'transcription' ? null : 'transcription')}>
+          <ConfigField
+            label="Recognition backend"
+            description="Faster Whisper is the default high-efficiency backend and runs through CTranslate2 on CUDA or the processor. whisper.cpp remains available as the broad-hardware compatibility fallback."
+          >
+            <div style={selectWrapperStyle}>
+              <SelectField
+                value={config.local_engine}
+                onChange={(value) => updateConfig('local_engine', value)}
+                ariaLabel="Recognition backend"
+                searchable={false}
+                options={[
+                  { value: 'VoxBridge Faster Whisper', label: 'VoxBridge · Faster Whisper (Default)' },
+                  { value: 'VoxBridge', label: 'VoxBridge · whisper.cpp (Compatibility)' },
+                ]}
+              />
+            </div>
+          </ConfigField>
+
           <ConfigField label="Speech recognition model" description="Choose the local model that converts speech to text. Distil-Small is recommended for most systems.">
             <ModelSelectionPanel
               availableModels={availableModels}
@@ -1074,7 +1092,9 @@ export function ConfigPage(props: ConfigPageProps) {
                 ? 'Waiting for the current model load to finish before this can be changed.'
                 : gpuVramCheck && !gpuVramCheck.supported
                   ? gpuVramCheck.reason ?? 'Graphics acceleration is not available on this hardware.'
-                  : 'Uses VoxBridge graphics acceleration for speech recognition and falls back to the main processor when required. Usage and activity appear on Status.'
+                  : config.local_engine === 'VoxBridge Faster Whisper'
+                    ? 'Uses CTranslate2 CUDA acceleration on supported NVIDIA systems and automatically falls back to optimized processor inference when CUDA is unavailable.'
+                    : 'Uses VoxBridge Vulkan acceleration for speech recognition and falls back to the main processor when required. Usage and activity appear on Status.'
             }
           >
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: tokens.spacing.sm, width: '100%' }}>

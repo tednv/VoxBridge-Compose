@@ -628,6 +628,7 @@ pub struct CombinedVramCheck {
     pub gpu_available_vram_bytes: Option<u64>,
     pub system_memory_total_bytes: Option<u64>,
     pub system_memory_available_bytes: Option<u64>,
+    pub system_cpu_usage_percent: Option<f64>,
     /// Estimated whisper VRAM usage, only if Local+GPU transcription is selected.
     pub whisper_estimate_bytes: u64,
     /// Embedded model estimate or live selected-model VRAM reported by local Ollama.
@@ -758,6 +759,7 @@ pub async fn check_combined_vram(
                 gpu_available_vram_bytes: Some(info.available_vram_bytes),
                 system_memory_total_bytes: system_memory.map(|value| value.0),
                 system_memory_available_bytes: system_memory.map(|value| value.1),
+                system_cpu_usage_percent: crate::hardware_report::system_cpu_usage_percent(),
                 whisper_estimate_bytes,
                 compose_estimate_bytes,
                 compose_memory_source,
@@ -772,6 +774,7 @@ pub async fn check_combined_vram(
             gpu_available_vram_bytes: None,
             system_memory_total_bytes: system_memory.map(|value| value.0),
             system_memory_available_bytes: system_memory.map(|value| value.1),
+            system_cpu_usage_percent: crate::hardware_report::system_cpu_usage_percent(),
             whisper_estimate_bytes,
             compose_estimate_bytes,
             compose_memory_source,

@@ -44,6 +44,7 @@ pub async fn save_config(
         let hotkey_changed = config_guard.hotkey != normalized_config.hotkey;
         let whisper_settings_changed = config_guard.local_model_size
             != normalized_config.local_model_size
+            || config_guard.local_engine != normalized_config.local_engine
             || config_guard.enable_gpu != normalized_config.enable_gpu
             || config_guard.transcription_mode != normalized_config.transcription_mode;
         let compose_settings_changed = config_guard.output_method

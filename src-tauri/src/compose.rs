@@ -529,7 +529,7 @@ fn normalized_words(text: &str) -> Vec<String> {
 /// Repeating a phrase that appeared only once in the source is never a legitimate
 /// cleanup, regardless of how permissive the user's fidelity threshold is.
 fn introduces_repeated_phrase(raw: &str, corrected: &str) -> bool {
-    const PHRASE_WORDS: usize = 4;
+    const PHRASE_WORDS: usize = 3;
     fn counts(words: &[String]) -> std::collections::HashMap<String, usize> {
         let mut result = std::collections::HashMap::new();
         for phrase in words.windows(PHRASE_WORDS) {
@@ -1336,7 +1336,7 @@ fn spawn_pending_correction(
         let backend_for_blocking = backend_cache.clone();
         let agents = cfg.compose_agents.clone();
 
-        let (final_text, stages) = tokio::task::spawn_blocking(move || {
+        let (final_text, mut stages) = tokio::task::spawn_blocking(move || {
             run_agent_chain(
                 &batch_raw_for_blocking,
                 &context_for_blocking,
@@ -1387,6 +1387,7 @@ fn spawn_pending_correction(
         let discard_result = pending.lock().unwrap().discard_before_generation > document_generation;
         let mut applied = false;
         let mut applied_text_len = final_text.len();
+        let mut rejected_splice_repetition = false;
         {
             let mut buf = buffer.lock().unwrap();
             // Patch only the exact snapshot this job processed. Newer speech may have
@@ -1403,10 +1404,34 @@ fn spawn_pending_correction(
                 if snapshot_is_ours {
                     let replacement =
                         preserve_boundary_whitespace(&batch_raw_text, &final_text);
-                    applied_text_len = replacement.len();
-                    buf.replace_range(batch_start..snapshot_end, &replacement);
-                    applied = true;
+                    let mut candidate = String::with_capacity(
+                        buf.len() - batch_raw_text.len() + replacement.len(),
+                    );
+                    candidate.push_str(&buf[..batch_start]);
+                    candidate.push_str(&replacement);
+                    candidate.push_str(&buf[snapshot_end..]);
+                    if introduces_repeated_phrase(&buf, &candidate) {
+                        rejected_splice_repetition = true;
+                        applied_text_len = batch_raw_text.len();
+                        crate::log_info!(
+                            "Compose: rejected rewrite because it introduced repetition across the editable splice boundary"
+                        );
+                    } else {
+                        applied_text_len = replacement.len();
+                        buf.replace_range(batch_start..snapshot_end, &replacement);
+                        applied = true;
+                    }
                 }
+            }
+        }
+
+        if rejected_splice_repetition {
+            if let Some(stage) = stages.iter_mut().rev().find(|stage| stage.accepted) {
+                stage.accepted = false;
+                stage.note = Some(
+                    "Rejected because the rewrite duplicated text across the live edit boundary"
+                        .to_string(),
+                );
             }
         }
 
@@ -1804,6 +1829,13 @@ mod tests {
             "Choose a useful file name. The recording should stop and choose a useful file name.";
         assert!(introduces_repeated_phrase(raw, repeated));
         assert!(!introduces_repeated_phrase(raw, raw));
+    }
+
+    #[test]
+    fn repeated_phrase_guard_rejects_short_streaming_duplicates() {
+        let raw = "Hello, I'm testing this application. It appears to be working.";
+        let repeated = "Hello, I'm testing this application. I'm testing this application to see whether it is working.";
+        assert!(introduces_repeated_phrase(raw, repeated));
     }
 
     #[test]

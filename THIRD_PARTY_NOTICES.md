@@ -10,6 +10,8 @@ source submodules.
 | [VoxBridge](https://github.com/tednv/VoxBridge) | Speech-recognition and embedded-refinement runtime | MIT; see `voxbridge/LICENSE` |
 | [whisper.cpp](https://github.com/ggerganov/whisper.cpp) | Native speech inference | MIT; see `voxbridge/native/whisper.cpp/LICENSE` |
 | [llama.cpp](https://github.com/ggml-org/llama.cpp) | Native language-model inference | MIT; see `voxbridge/native/llama.cpp/LICENSE` |
+| [Faster Whisper](https://github.com/SYSTRAN/faster-whisper) | Optional managed speech-recognition pipeline | MIT |
+| [CTranslate2](https://github.com/OpenNMT/CTranslate2) | Optional optimized Transformer inference used by Faster Whisper | MIT |
 | [Tauri](https://tauri.app/) | Desktop application framework | Apache-2.0 OR MIT |
 | [Preact](https://preactjs.com/) | User-interface library | MIT |
 | [Tabler Icons](https://tabler.io/icons) | Interface icons | MIT |

@@ -1,4 +1,54 @@
 use crate::gpu_info;
+use std::sync::{Mutex, OnceLock};
+
+fn cpu_times() -> Option<(u64, u64)> {
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::Foundation::FILETIME;
+        use windows::Win32::System::Threading::GetSystemTimes;
+
+        let mut idle = FILETIME::default();
+        let mut kernel = FILETIME::default();
+        let mut user = FILETIME::default();
+        unsafe { GetSystemTimes(Some(&mut idle), Some(&mut kernel), Some(&mut user)).ok()? };
+        let value = |time: FILETIME| {
+            ((time.dwHighDateTime as u64) << 32) | time.dwLowDateTime as u64
+        };
+        return Some((value(idle), value(kernel).saturating_add(value(user))));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let line = std::fs::read_to_string("/proc/stat")
+            .ok()?
+            .lines()
+            .next()?
+            .to_string();
+        let values: Vec<u64> = line
+            .split_whitespace()
+            .skip(1)
+            .filter_map(|value| value.parse().ok())
+            .collect();
+        let idle = values.get(3).copied().unwrap_or(0)
+            + values.get(4).copied().unwrap_or(0);
+        return Some((idle, values.iter().copied().sum()));
+    }
+}
+
+pub(crate) fn system_cpu_usage_percent() -> Option<f64> {
+    static PREVIOUS: OnceLock<Mutex<Option<(u64, u64)>>> = OnceLock::new();
+    let current = cpu_times()?;
+    let mut previous = PREVIOUS.get_or_init(|| Mutex::new(None)).lock().ok()?;
+    let result = previous.and_then(|(idle, total)| {
+        let total_delta = current.1.saturating_sub(total);
+        let idle_delta = current.0.saturating_sub(idle);
+        (total_delta > 0).then(|| {
+            (100.0 * (1.0 - idle_delta as f64 / total_delta as f64)).clamp(0.0, 100.0)
+        })
+    });
+    *previous = Some(current);
+    result
+}
 
 #[cfg(target_os = "windows")]
 pub(crate) fn system_memory_bytes() -> Option<(u64, u64)> {

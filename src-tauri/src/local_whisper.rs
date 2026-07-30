@@ -43,6 +43,134 @@ pub struct LoadedVoxBridgeModel {
 
 pub type VoxBridgeEngineCache = Arc<Mutex<Option<LoadedVoxBridgeModel>>>;
 
+pub struct LoadedFasterWhisperModel {
+    pub backend: voxbridge::FasterWhisperBackend,
+    pub model_size: String,
+    pub requested_gpu: bool,
+    pub actual_gpu: bool,
+}
+
+pub type FasterWhisperEngineCache = Arc<Mutex<Option<LoadedFasterWhisperModel>>>;
+
+pub fn is_faster_whisper_engine(engine: &str) -> bool {
+    engine.trim().eq_ignore_ascii_case("VoxBridge Faster Whisper")
+}
+
+fn faster_whisper_model_name(model_size: &str) -> &str {
+    model_size.strip_prefix("fw-").unwrap_or(model_size)
+}
+
+fn ensure_faster_whisper_model_loaded(
+    cache: &FasterWhisperEngineCache,
+    model_size: &str,
+    use_gpu: bool,
+    resource_base: Option<&std::path::Path>,
+) -> Result<bool, String> {
+    {
+        let guard = cache.lock().unwrap();
+        if let Some(loaded) = guard.as_ref() {
+            if loaded.model_size == model_size && loaded.requested_gpu == use_gpu {
+                return Ok(loaded.actual_gpu);
+            }
+        }
+    }
+
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let dev_work_dir = manifest_dir
+        .parent()
+        .unwrap_or(manifest_dir)
+        .join("work");
+    let candidate_bases: Vec<&std::path::Path> = resource_base
+        .into_iter()
+        .chain(std::iter::once(dev_work_dir.as_path()))
+        .collect();
+    let runtime = voxbridge::FasterWhisperRuntime::discover(&candidate_bases)?;
+    let model_cache_dir = dirs::config_dir()
+        .ok_or("Could not find the configuration directory")?
+        .join("foss-voquill")
+        .join("models")
+        .join("faster-whisper")
+        .join(faster_whisper_model_name(model_size));
+    let model_name = faster_whisper_model_name(model_size);
+    let load = |device, compute_type: &str| {
+        voxbridge::FasterWhisperBackend::load(
+            &runtime,
+            voxbridge::FasterWhisperConfig {
+                model: model_name.to_string(),
+                device,
+                compute_type: compute_type.to_string(),
+                model_cache_dir: model_cache_dir.clone(),
+            },
+        )
+    };
+    let (backend, actual_gpu) = if use_gpu {
+        match load(voxbridge::FasterWhisperDevice::Cuda, "float16") {
+            Ok(backend) => (backend, true),
+            Err(error) => {
+                log_warn!(
+                    "VoxBridge Faster Whisper CUDA load failed ({}); using optimized processor inference",
+                    error
+                );
+                (load(voxbridge::FasterWhisperDevice::Cpu, "int8")?, false)
+            }
+        }
+    } else {
+        (load(voxbridge::FasterWhisperDevice::Cpu, "int8")?, false)
+    };
+    log_info!(
+        "VoxBridge Faster Whisper: loaded '{}' on {} ({})",
+        backend.model_name(),
+        backend.device_name(),
+        backend.compute_type()
+    );
+    *cache.lock().unwrap() = Some(LoadedFasterWhisperModel {
+        backend,
+        model_size: model_size.to_string(),
+        requested_gpu: use_gpu,
+        actual_gpu,
+    });
+    Ok(actual_gpu)
+}
+
+pub fn preload_faster_whisper_model(
+    cache: &FasterWhisperEngineCache,
+    model_size: &str,
+    use_gpu: bool,
+    resource_base: Option<&std::path::Path>,
+) -> Result<bool, String> {
+    let mut actual_gpu =
+        ensure_faster_whisper_model_loaded(cache, model_size, use_gpu, resource_base)?;
+    let silence = vec![0.0f32; 8000];
+    let warmup_result = {
+        let guard = cache.lock().unwrap();
+        let loaded = guard
+            .as_ref()
+            .ok_or_else(|| "Faster Whisper model failed to stay cached".to_string())?;
+        loaded.backend.transcribe(&silence, Some("en"), None)
+    };
+    if let Err(cuda_error) = warmup_result {
+        if !actual_gpu {
+            return Err(cuda_error);
+        }
+        log_warn!(
+            "VoxBridge Faster Whisper CUDA warm-up failed ({}); using optimized processor inference",
+            cuda_error
+        );
+        *cache.lock().unwrap() = None;
+        ensure_faster_whisper_model_loaded(cache, model_size, false, resource_base)?;
+        {
+            let mut guard = cache.lock().unwrap();
+            let loaded = guard
+                .as_mut()
+                .ok_or_else(|| "Faster Whisper processor fallback failed to stay cached".to_string())?;
+            loaded.requested_gpu = true;
+            loaded.backend.transcribe(&silence, Some("en"), None)?;
+        }
+        actual_gpu = false;
+    }
+    Ok(actual_gpu)
+}
+
 /// Tries to (re)use a cached VoxBridge model matching `model_size`/`use_gpu`, loading
 /// one if there isn't a match yet (including when only `use_gpu` changed - a GPU and a
 /// CPU engine are different DLLs, never interchangeable). No GPU->CPU fallback of its
@@ -367,6 +495,7 @@ pub struct LocalWhisperService {
     /// failure) - VoxBridge is a performance opportunity, never a new way for
     /// transcription to break.
     voxbridge_cache: Option<VoxBridgeEngineCache>,
+    faster_whisper_cache: Option<FasterWhisperEngineCache>,
     /// The app's resource directory (`app_handle.path().resource_dir()`), for finding a
     /// packaged VoxBridge build. `None` in dev/test contexts, where VoxBridge falls back
     /// to looking next to its own crate source instead (see `resolve_engines_dir`).
@@ -380,13 +509,14 @@ impl LocalWhisperService {
         use_gpu: bool,
         last_gpu_error: Option<Arc<Mutex<Option<String>>>>,
         voxbridge_cache: Option<VoxBridgeEngineCache>,
+        faster_whisper_cache: Option<FasterWhisperEngineCache>,
         voxbridge_resource_base: Option<PathBuf>,
     ) -> Result<Self, TranscriptionError> {
         // Validate the model exists up front so callers get an immediate, clear error
         // instead of failing deep inside transcribe().
         let model_manager = ModelManager::new().map_err(|e| TranscriptionError::ModelError(e))?;
         let model_path = model_manager.get_model_path(model_size);
-        if !model_path.exists() {
+        if faster_whisper_cache.is_none() && !model_path.exists() {
             return Err(TranscriptionError::ModelError(format!(
                 "Model {} not found. Please download it in settings.",
                 model_size
@@ -396,6 +526,7 @@ impl LocalWhisperService {
         Ok(Self {
             cache,
             voxbridge_cache,
+            faster_whisper_cache,
             voxbridge_resource_base,
             model_size: model_size.to_string(),
             use_gpu,
@@ -442,6 +573,37 @@ impl TranscriptionService for LocalWhisperService {
             samples.len(),
             samples.len() as f64 / 16000.0
         );
+
+        if let Some(faster_whisper_cache) = &self.faster_whisper_cache {
+            let _actual_gpu = ensure_faster_whisper_model_loaded(
+                faster_whisper_cache,
+                &self.model_size,
+                self.use_gpu,
+                self.voxbridge_resource_base.as_deref(),
+            )
+            .map_err(TranscriptionError::ModelError)?;
+            let cache = faster_whisper_cache.clone();
+            let samples = samples.clone();
+            let language = language.map(str::to_string);
+            let prompt = prompt.map(str::to_string);
+            let text = tokio::task::spawn_blocking(move || {
+                let guard = cache.lock().unwrap();
+                let loaded = guard
+                    .as_ref()
+                    .ok_or_else(|| "Faster Whisper model failed to stay cached".to_string())?;
+                loaded
+                    .backend
+                    .transcribe(&samples, language.as_deref(), prompt.as_deref())
+            })
+            .await
+            .map_err(|error| TranscriptionError::ModelError(error.to_string()))?
+            .map_err(TranscriptionError::ModelError)?;
+            log_info!(
+                "Local transcription: handled by VoxBridge Faster Whisper in {:.2}s",
+                start.elapsed().as_secs_f64()
+            );
+            return Ok(text);
+        }
 
         // Try VoxBridge first: proper per-CPU-ISA dispatch (AVX2 vs. a true SSE4.2
         // floor) on CPU, or the Vulkan-enabled variant on GPU, instead of whisper-rs's

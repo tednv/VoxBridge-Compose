@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { IconCopy, IconTrash, IconRefresh, IconHistory, IconChevronDown, IconChevronUp, IconDownload, IconFolderOpen, IconMicrophone, IconPlayerStopFilled } from '@tabler/icons-preact';
+import { IconRefresh, IconChevronDown, IconChevronUp, IconDownload, IconFolderOpen } from '@tabler/icons-preact';
 import { Card } from '../components/Card.tsx';
 import { Button } from '../components/Button.tsx';
 import { tabPanelPaddedStyle, tabPanelStyle } from '../theme/ui-primitives.ts';
@@ -51,7 +51,7 @@ interface ComposePageProps {
   onCopyToClipboard: (text: string) => void;
   onEditAgent: (agentId: string) => void;
   currentStatus: string;
-  enginesReady: boolean;
+  clearWorkspaceSignal: number;
 }
 
 interface ComposeDumpResult {
@@ -59,37 +59,11 @@ interface ComposeDumpResult {
   filePath: string;
 }
 
-function AgentHelp({ label, text }: { label: string; text: string }) {
-  const [visible, setVisible] = useState(false);
-  return (
-    <span style={{ position: 'relative', display: 'inline-flex', alignItems: 'center' }}>
-      <button
-        type="button"
-        aria-label={`${label}: ${text}`}
-        onMouseEnter={() => setVisible(true)}
-        onMouseLeave={() => setVisible(false)}
-        onFocus={() => setVisible(true)}
-        onBlur={() => setVisible(false)}
-        onClick={(event) => event.stopPropagation()}
-        style={{ width: '15px', height: '15px', padding: 0, borderRadius: '50%', border: '1px solid rgba(255,255,255,.2)', background: 'transparent', color: tokens.colors.textMuted, fontSize: '9px', lineHeight: '13px', cursor: 'help' }}
-      >
-        ?
-      </button>
-      {visible && (
-        <span role="tooltip" style={{ position: 'absolute', zIndex: 60, top: '20px', left: 0, width: '260px', padding: '8px 10px', borderRadius: '7px', border: '1px solid rgba(255,138,0,.24)', background: 'rgba(18,17,15,.99)', boxShadow: '0 10px 30px rgba(0,0,0,.45)', color: '#d7d1c7', fontSize: '11px', fontWeight: 450, lineHeight: 1.4, whiteSpace: 'normal', pointerEvents: 'none' }}>
-          {text}
-        </span>
-      )}
-    </span>
-  );
-}
-
 interface OffloadConfig {
   offload_locations: string[];
   default_offload_location: string;
   remember_offload_location: boolean;
   last_offload_location: string;
-  hotkey: string;
 }
 
 // Mirrors compose::filename_slug in Rust exactly, so the live preview shown while typing
@@ -112,7 +86,7 @@ function generateFilenameSlug(text: string): string {
   return slug;
 }
 
-export function ComposePage({ onCopyToClipboard, onEditAgent, currentStatus, enginesReady }: ComposePageProps) {
+export function ComposePage({ onCopyToClipboard, onEditAgent, currentStatus, clearWorkspaceSignal }: ComposePageProps) {
   const [rawText, setRawText] = useState('');
   const [text, setText] = useState('');
   const [correcting, setCorrecting] = useState(false);
@@ -130,9 +104,7 @@ export function ComposePage({ onCopyToClipboard, onEditAgent, currentStatus, eng
   const [dictationsDir, setDictationsDir] = useState<string | null>(null);
   const [offloadLocations, setOffloadLocations] = useState<string[]>([]);
   const [rememberOffloadLocation, setRememberOffloadLocation] = useState(false);
-  const [recordingShortcut, setRecordingShortcut] = useState('');
   const [isApplyingThreshold, setIsApplyingThreshold] = useState(false);
-  const [recordingCommandPending, setRecordingCommandPending] = useState(false);
   const originalPaneRef = useRef<HTMLDivElement | null>(null);
   const polishedPaneRef = useRef<HTMLDivElement | null>(null);
   const originalFollowsOutput = useRef(true);
@@ -153,11 +125,6 @@ export function ComposePage({ onCopyToClipboard, onEditAgent, currentStatus, eng
   const clampedAgentIndex = Math.min(selectedAgentIndex, Math.max(0, enabledAgents.length - 1));
   const selectedAgent = enabledAgents[clampedAgentIndex] || null;
   const effectiveThreshold = previewThreshold ?? selectedAgent?.minFidelity ?? 0.85;
-  const statusColor = currentStatus === 'Error'
-    ? tokens.colors.error
-    : currentStatus === 'Ready'
-      ? tokens.colors.success
-      : tokens.colors.accentHover;
 
   const updateFollowState = (element: HTMLDivElement, followRef: { current: boolean }) => {
     followRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 32;
@@ -210,7 +177,6 @@ export function ComposePage({ onCopyToClipboard, onEditAgent, currentStatus, eng
         effective,
       ].filter(Boolean))));
       setRememberOffloadLocation(loadedConfig.remember_offload_location);
-      setRecordingShortcut(loadedConfig.hotkey);
     }).catch(() => {});
 
     const unlisten = listen<ComposeState>('compose-state-updated', (event) => {
@@ -350,18 +316,14 @@ export function ComposePage({ onCopyToClipboard, onEditAgent, currentStatus, eng
     };
   }, [currentStatus, correcting, text]);
 
-  const handleClear = () => {
-    // Optimistic: clear the visible text immediately regardless of the round-trip, so
-    // the button always visibly responds even if the backend call is slow or fails.
+  useEffect(() => {
+    if (clearWorkspaceSignal === 0) return;
     setRawText('');
     setText('');
     setHistory([]);
     setPreviewThreshold(null);
     setSemanticFilename(null);
-    invoke('clear_compose_text').catch((error) => {
-      console.error('Failed to clear Compose text:', error);
-    });
-  };
+  }, [clearWorkspaceSignal]);
 
   const handleDump = () => {
     invoke<ComposeDumpResult>('dump_compose_text', { text: previewText })
@@ -399,13 +361,6 @@ export function ComposePage({ onCopyToClipboard, onEditAgent, currentStatus, eng
     if (dictationsDir) selectOffloadLocation(dictationsDir, remember);
   };
 
-  const toggleRecording = () => {
-    const isRecording = currentStatus === 'Recording';
-    setRecordingCommandPending(true);
-    invoke(isRecording ? 'stop_recording' : 'start_recording')
-      .catch((error) => console.error(`Failed to ${isRecording ? 'stop' : 'start'} recording:`, error))
-      .finally(() => setRecordingCommandPending(false));
-  };
 
   const revertBatch = (batchId: number, keepStageCount: number) => {
     invoke('revert_compose_batch', { batchId, keepStageCount })
@@ -438,148 +393,45 @@ export function ComposePage({ onCopyToClipboard, onEditAgent, currentStatus, eng
         @keyframes voxbridge-agent-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
         @keyframes voxbridge-agent-pulse { 0%, 100% { opacity: 0.55; } 50% { opacity: 1; } }
       `}</style>
-      <div style={{ ...tabPanelPaddedStyle, position: 'relative', display: 'grid', gridTemplateRows: 'auto auto minmax(0, 1fr)', gap: '10px', paddingBottom: '14px', height: '100%', minHeight: 0 }}>
-        <header style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '4px 2px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '5px', minWidth: 0, overflow: 'visible', flex: '1 1 auto' }}>
-            <span style={{ flexShrink: 0, marginRight: '2px', color: tokens.colors.textMuted, fontSize: tokens.typography.sizeXs }}>
-              Agents
-            </span>
-            {enabledAgents.map((agent, index) => (
-              <div
-                key={agent.id}
-                style={{ position: 'relative', flexShrink: 0, paddingBottom: '8px', marginBottom: '-8px' }}
-                onMouseEnter={() => setInspectedAgentId(agent.id)}
-                onMouseLeave={() => setInspectedAgentId(null)}
-              >
-                <button
-                  type="button"
-                  onClick={() => {
-                    selectAgentIndex(index);
-                    onEditAgent(agent.id);
-                  }}
-                  onFocus={() => setInspectedAgentId(agent.id)}
-                  onBlur={() => setInspectedAgentId(null)}
-                  aria-describedby={inspectedAgentId === agent.id ? `agent-summary-${agent.id}` : undefined}
-                  style={{ border: 0, borderRadius: '6px', background: index === clampedAgentIndex ? 'rgba(255,138,0,.12)' : 'transparent', color: index === clampedAgentIndex ? tokens.colors.accentSoft : tokens.colors.textSecondary, padding: '5px 7px', cursor: 'pointer', fontSize: '11px', fontWeight: 600 }}
-                >
-                  {correcting && activeAgent === (agentPresets.find((preset) => preset.id === agent.presetId)?.name || agent.name) && (
-                    <IconRefresh size={13} style={{ marginRight: '5px', verticalAlign: '-2px', animation: 'voxbridge-agent-spin 1.1s linear infinite' }} />
-                  )}
-                  {agentPresets.find((preset) => preset.id === agent.presetId)?.name || agent.name}
-                </button>
-                {inspectedAgentId === agent.id && (
-                  <div
-                    id={`agent-summary-${agent.id}`}
-                    role="tooltip"
-                    style={{ position: 'absolute', top: '100%', left: 0, zIndex: 30, width: 'min(430px, 46vw)', padding: '12px', borderRadius: '10px', border: '1px solid rgba(255,184,0,.25)', background: tokens.colors.glassBgHeavy, boxShadow: tokens.shadows.lg, color: tokens.colors.textSecondary, fontSize: tokens.typography.sizeXs, lineHeight: 1.45 }}
-                  >
-                    <div style={{ display: 'flex', gap: '12px', marginBottom: '8px', color: tokens.colors.textMuted, flexWrap: 'wrap' }}>
-                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
-                        Fidelity <strong style={{ color: tokens.colors.textPrimary }}>{agent.minFidelity.toFixed(2)}</strong>
-                        <AgentHelp label="Fidelity" text="Minimum similarity required before this agent's result is accepted." />
-                      </span>
-                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
-                        Speed <strong style={{ color: tokens.colors.textPrimary }}>{agent.speed}</strong>
-                        <AgentHelp label="Speed" text="Controls the processing and output budget available to this agent." />
-                      </span>
-                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
-                        Stage <strong style={{ color: tokens.colors.textPrimary }}>{agent.priority + 1}</strong>
-                        <AgentHelp label="Stage" text="This agent's execution order in the refinement pipeline." />
-                      </span>
-                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
-                        History <strong style={{ color: tokens.colors.textPrimary }}>{agent.includeHistory ? `${agent.historyItems || 3} entries` : 'Off'}</strong>
-                        <AgentHelp label="History" text="Recent saved History entries supplied as read-only context. Private mode always disables this." />
-                      </span>
-                    </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '5px', color: tokens.colors.textMuted, fontSize: tokens.typography.sizeXs, fontWeight: 650 }}>
-                      Prompt
-                      <AgentHelp label="Prompt" text="Instructions this agent follows when refining the current transcript." />
-                    </div>
-                    <div style={{ color: tokens.colors.textPrimary, whiteSpace: 'pre-wrap', maxHeight: '180px', overflowY: 'auto' }}>{agent.prompt}</div>
-                    <div style={{ marginTop: '8px', color: tokens.colors.accentSoft }}>Click to edit this agent</div>
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-          {selectedAgent && (
-            <label style={{ display: 'inline-flex', alignItems: 'center', gap: '7px', flexShrink: 0, color: tokens.colors.textMuted, fontSize: '11px' }}>
-              Fidelity
-              <input type="range" min={0} max={1} step={0.05} value={effectiveThreshold} onInput={(e: Event) => handleThresholdChange(Number((e.target as HTMLInputElement).value))} style={{ width: '100px' }} />
-              <strong style={{ width: '30px', color: tokens.colors.textPrimary }}>{effectiveThreshold.toFixed(2)}</strong>
-            </label>
-          )}
-          {selectedAgent && <Button variant="secondary" size="sm" onClick={applyThreshold} disabled={previewThreshold === null || isApplyingThreshold}>{isApplyingThreshold ? 'Applying…' : 'Apply'}</Button>}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexShrink: 0 }}>
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '7px', color: tokens.colors.textMuted, fontSize: tokens.typography.sizeXs }}>
-              <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: statusColor }} />
-              {currentStatus}
-            </span>
-            <Button
-              variant={currentStatus === 'Recording' ? 'danger' : 'secondary'}
-              size="md"
-              onClick={toggleRecording}
-              disabled={recordingCommandPending || (!enginesReady && currentStatus !== 'Recording') || (!['Ready', 'Recording'].includes(currentStatus))}
-              title={enginesReady
-                ? `${currentStatus === 'Recording' ? 'Stop recording' : 'Start recording'}${recordingShortcut ? ` · ${recordingShortcut}` : ''}`
-                : 'Speech recognition and text refinement must be ready'}
-            >
-              {currentStatus === 'Recording' ? <IconPlayerStopFilled size={16} /> : <IconMicrophone size={16} />}
-              {currentStatus === 'Recording' ? 'Stop recording' : 'Start recording'}
-            </Button>
-          </div>
-        </header>
+      <div style={{ ...tabPanelPaddedStyle, position: 'relative', display: 'grid', gridTemplateRows: 'auto minmax(0, 1fr)', gap: '10px', paddingBottom: '14px', height: '100%', minHeight: 0 }}>
 
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <span style={{ fontSize: tokens.typography.sizeXs, color: tokens.colors.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {dumpStatus
-              ? dumpStatus
-              : correcting
-                ? `${activeAgent ? `${activeAgent} is working...` : 'Cleaning up...'}`
-                : previewText
-                  ? semanticFilename ?? `${generateFilenameSlug(previewText)}.txt`
-                  : ''}
-          </span>
-          <div style={{ display: 'flex', gap: tokens.spacing.xs }}>
-            <Button variant="ghost" size="sm" onClick={() => setHistoryOpen(!historyOpen)} title="Contribution history">
-              <IconHistory size={14} />
-            </Button>
-            <Button variant="ghost" size="sm" onClick={() => onCopyToClipboard(previewText)} disabled={!previewText} title="Copy all">
-              <IconCopy size={14} />
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={handleDump}
-              disabled={!previewText}
-              title={
-                previewText && dictationsDir
-                  ? `Offload to ${dictationsDir} and clear the workspace`
-                  : 'Offload composed text and clear the workspace'
-              }
-            >
-              <IconDownload size={14} /> Offload
-            </Button>
-            <select
-              value={dictationsDir ?? ''}
-              onChange={(event: Event) => selectOffloadLocation((event.currentTarget as HTMLSelectElement).value)}
-              aria-label="Offload location"
-              title="Offload location for this session"
-              style={{ maxWidth: '210px', padding: '5px 8px', borderRadius: '7px', border: '1px solid rgba(255,255,255,.1)', background: tokens.colors.bgSecondary, color: tokens.colors.textSecondary, fontSize: '11px' }}
-            >
-              {offloadLocations.map((path) => <option key={path} value={path}>{path}</option>)}
-            </select>
-            <label title="Keep the selected offload location for the next application session." style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', color: tokens.colors.textMuted, fontSize: '10px', whiteSpace: 'nowrap' }}>
-              <input type="checkbox" checked={rememberOffloadLocation} onChange={(event: Event) => toggleRememberOffloadLocation((event.currentTarget as HTMLInputElement).checked)} />
-              Remember
-            </label>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: tokens.spacing.xs, minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '2px' }}>
             <Button variant="ghost" size="sm" onClick={handleOpenDictationsFolder} title={dictationsDir ? `Open ${dictationsDir}` : 'Open offload location'}>
               <IconFolderOpen size={14} />
             </Button>
-            <Button variant="ghost" size="sm" onClick={handleClear} disabled={!text && !rawText} title="Clear">
-              <IconTrash size={14} />
-            </Button>
           </div>
+          <select
+            value={dictationsDir ?? ''}
+            onChange={(event: Event) => selectOffloadLocation((event.currentTarget as HTMLSelectElement).value)}
+            aria-label="Offload location"
+            title="Offload location for this session"
+            style={{ flex: '1 1 280px', minWidth: '150px', maxWidth: '360px', padding: '6px 8px', borderRadius: '7px', border: '1px solid rgba(255,255,255,.1)', background: tokens.colors.bgSecondary, color: tokens.colors.textSecondary, fontSize: '11px' }}
+          >
+            {offloadLocations.map((path) => <option key={path} value={path}>{path}</option>)}
+          </select>
+          <label title="Keep the selected offload location for the next application session." style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', color: tokens.colors.textMuted, fontSize: '10px', whiteSpace: 'nowrap' }}>
+            <input type="checkbox" checked={rememberOffloadLocation} onChange={(event: Event) => toggleRememberOffloadLocation((event.currentTarget as HTMLInputElement).checked)} />
+            Remember
+          </label>
+          <span
+            title={dumpStatus || semanticFilename || (previewText ? `${generateFilenameSlug(previewText)}.txt` : 'A filename will be generated from the document')}
+            style={{ flex: '0 1 260px', minWidth: '120px', padding: '6px 8px', borderRadius: '7px', border: '1px solid rgba(255,255,255,.08)', background: 'rgba(255,255,255,.02)', color: dumpStatus ? tokens.colors.accentSoft : tokens.colors.textMuted, fontFamily: tokens.typography.fontMono, fontSize: '10px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+          >
+            {dumpStatus
+              || (correcting
+                ? `${activeAgent ? `${activeAgent} is working…` : 'Generating filename…'}`
+                : semanticFilename ?? (previewText ? `${generateFilenameSlug(previewText)}.txt` : 'Filename'))}
+          </span>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={handleDump}
+            disabled={!previewText}
+            title={previewText && dictationsDir ? `Offload to ${dictationsDir} and clear the workspace` : 'Offload refined text and clear the workspace'}
+          >
+            <IconDownload size={14} /> Offload
+          </Button>
         </div>
 
         <div className="compose-text-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '12px', height: '100%', minHeight: 0 }}>
@@ -597,7 +449,69 @@ export function ComposePage({ onCopyToClipboard, onEditAgent, currentStatus, eng
           </section>
 
           <section style={{ display: 'grid', gridTemplateRows: 'auto minmax(0, 1fr)', gap: '6px', minHeight: 0 }}>
-            <div style={{ color: tokens.colors.textMuted, fontSize: tokens.typography.sizeXs }}>Refined</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0, overflow: 'visible' }}>
+              <span style={{ flexShrink: 0, color: tokens.colors.textMuted, fontSize: tokens.typography.sizeXs }}>Agents</span>
+              {enabledAgents.map((agent, index) => (
+                <div
+                  key={agent.id}
+                  style={{ position: 'relative', flexShrink: 0 }}
+                  onMouseEnter={() => setInspectedAgentId(agent.id)}
+                  onMouseLeave={() => setInspectedAgentId(null)}
+                >
+                  <button
+                    type="button"
+                    onClick={() => {
+                      selectAgentIndex(index);
+                      onEditAgent(agent.id);
+                    }}
+                    onFocus={() => setInspectedAgentId(agent.id)}
+                    onBlur={() => setInspectedAgentId(null)}
+                    aria-describedby={inspectedAgentId === agent.id ? `pane-agent-summary-${agent.id}` : undefined}
+                    style={{ border: 0, borderRadius: '6px', background: index === clampedAgentIndex ? 'rgba(255,138,0,.12)' : 'transparent', color: index === clampedAgentIndex ? tokens.colors.accentSoft : tokens.colors.textSecondary, padding: '4px 7px', cursor: 'pointer', fontSize: '11px', fontWeight: 600 }}
+                  >
+                    {correcting && activeAgent === (agentPresets.find((preset) => preset.id === agent.presetId)?.name || agent.name) && (
+                      <IconRefresh size={13} style={{ marginRight: '5px', verticalAlign: '-2px', animation: 'voxbridge-agent-spin 1.1s linear infinite' }} />
+                    )}
+                    {agentPresets.find((preset) => preset.id === agent.presetId)?.name || agent.name}
+                  </button>
+                  {inspectedAgentId === agent.id && (
+                    <div
+                      id={`pane-agent-summary-${agent.id}`}
+                      role="tooltip"
+                      style={{ position: 'absolute', top: '100%', right: 0, zIndex: 40, width: 'min(430px, 46vw)', padding: '12px', borderRadius: '10px', border: '1px solid rgba(255,184,0,.25)', background: tokens.colors.glassBgHeavy, boxShadow: tokens.shadows.lg, color: tokens.colors.textSecondary, fontSize: tokens.typography.sizeXs, lineHeight: 1.45 }}
+                    >
+                      <div style={{ display: 'flex', gap: '12px', marginBottom: '8px', color: tokens.colors.textMuted, flexWrap: 'wrap' }}>
+                        <span>Stage <strong style={{ color: tokens.colors.textPrimary }}>{agent.priority + 1}</strong></span>
+                        <span>Fidelity <strong style={{ color: tokens.colors.textPrimary }}>{agent.minFidelity.toFixed(2)}</strong></span>
+                        <span>Speed <strong style={{ color: tokens.colors.textPrimary }}>{agent.speed}</strong></span>
+                        <span>History <strong style={{ color: tokens.colors.textPrimary }}>{agent.includeHistory ? `${agent.historyItems || 3} entries` : 'Off'}</strong></span>
+                      </div>
+                      <div style={{ marginBottom: '5px', color: tokens.colors.textMuted, fontWeight: 650 }}>Prompt</div>
+                      <div style={{ color: tokens.colors.textPrimary, whiteSpace: 'pre-wrap', maxHeight: '180px', overflowY: 'auto' }}>{agent.prompt}</div>
+                      <div style={{ marginTop: '8px', color: tokens.colors.accentSoft }}>Click to edit this agent</div>
+                    </div>
+                  )}
+                </div>
+              ))}
+              {selectedAgent && (
+                <label style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', marginLeft: 'auto', flexShrink: 0, color: tokens.colors.textMuted, fontSize: '11px' }}>
+                  Fidelity
+                  <input type="range" min={0} max={1} step={0.05} value={effectiveThreshold} onInput={(event: Event) => handleThresholdChange(Number((event.currentTarget as HTMLInputElement).value))} style={{ width: '90px' }} />
+                  <strong style={{ width: '30px', color: tokens.colors.textPrimary }}>{effectiveThreshold.toFixed(2)}</strong>
+                </label>
+              )}
+              {selectedAgent && (
+                <Button variant="secondary" size="sm" onClick={applyThreshold} disabled={previewThreshold === null || isApplyingThreshold}>
+                  {isApplyingThreshold ? 'Applying…' : 'Apply'}
+                </Button>
+              )}
+              <Button variant="secondary" size="sm" onClick={() => setHistoryOpen(!historyOpen)} title="Show contribution history">
+                History
+              </Button>
+              <Button variant="secondary" size="sm" onClick={() => onCopyToClipboard(previewText)} disabled={!previewText} title="Copy refined text">
+                Copy
+              </Button>
+            </div>
             <div
               ref={polishedPaneRef}
               onScroll={(event: Event) => updateFollowState(event.currentTarget as HTMLDivElement, polishedFollowsOutput)}
@@ -612,21 +526,28 @@ export function ComposePage({ onCopyToClipboard, onEditAgent, currentStatus, eng
 
         {historyOpen && (
           <div style={{ position: 'absolute', zIndex: 25, left: '24px', right: '24px', bottom: '14px', display: 'flex', flexDirection: 'column', gap: tokens.spacing.xs, maxHeight: '45%', overflowY: 'auto', padding: '12px', border: '1px solid rgba(255,184,0,.18)', borderRadius: tokens.radii.panel, background: 'rgba(12,11,10,.98)', boxShadow: tokens.shadows.lg }}>
-            <div style={{ fontSize: tokens.typography.sizeXs, color: tokens.colors.textMuted }}>
-              Contribution History
+            <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: tokens.spacing.sm }}>
+              <strong style={{ fontSize: tokens.typography.sizeSm, color: tokens.colors.textPrimary }}>Contributions</strong>
+              <span style={{ fontSize: '10px', color: tokens.colors.textMuted }}>
+                {history.length} recognized segment{history.length === 1 ? '' : 's'} · expand one to inspect each agent decision or restore an earlier result
+              </span>
             </div>
             {history.length === 0 ? (
               <div style={{ fontSize: tokens.typography.sizeXs, color: tokens.colors.textMuted }}>Nothing corrected yet this session.</div>
             ) : (
-              [...history].reverse().map((batch) => (
+              [...history].reverse().map((batch, reverseIndex) => (
                 <Card key={batch.id} style={{ padding: '10px 12px', borderRadius: '10px', border: '1px solid rgba(255, 255, 255, 0.08)', background: 'rgba(255, 255, 255, 0.02)', boxShadow: 'none' }}>
                   <button
                     type="button"
                     onClick={() => setExpandedBatchId(expandedBatchId === batch.id ? null : batch.id)}
                     style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', background: 'none', border: 'none', cursor: 'pointer', color: tokens.colors.textPrimary, padding: 0 }}
                   >
-                    <span style={{ fontSize: tokens.typography.sizeXs, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, marginRight: tokens.spacing.sm }}>
-                      {batch.rawText}
+                    <span style={{ display: 'grid', gridTemplateColumns: '82px minmax(0, 1fr) auto', alignItems: 'center', gap: tokens.spacing.sm, minWidth: 0, flex: 1, marginRight: tokens.spacing.sm, textAlign: 'left' }}>
+                      <strong style={{ fontSize: '10px', color: tokens.colors.accentSoft }}>Segment {history.length - reverseIndex}</strong>
+                      <span style={{ fontSize: tokens.typography.sizeXs, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{batch.rawText}</span>
+                      <span style={{ fontSize: '10px', color: tokens.colors.textMuted }}>
+                        {batch.stages.filter((stage) => stage.accepted).length}/{batch.stages.length} accepted
+                      </span>
                     </span>
                     {expandedBatchId === batch.id ? <IconChevronUp size={14} /> : <IconChevronDown size={14} />}
                   </button>
@@ -634,7 +555,7 @@ export function ComposePage({ onCopyToClipboard, onEditAgent, currentStatus, eng
                   {expandedBatchId === batch.id && (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: tokens.spacing.xs, marginTop: tokens.spacing.sm }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span style={{ fontSize: '11px', color: tokens.colors.textMuted }}>Raw</span>
+                        <span style={{ fontSize: '11px', color: tokens.colors.textMuted }}>Recognized input</span>
                         <Button variant="ghost" size="sm" onClick={() => revertBatch(batch.id, 0)}>Revert to raw</Button>
                       </div>
                       <div style={{ fontSize: tokens.typography.sizeXs, color: tokens.colors.textSecondary, whiteSpace: 'pre-wrap' }}>{batch.rawText}</div>
@@ -642,16 +563,22 @@ export function ComposePage({ onCopyToClipboard, onEditAgent, currentStatus, eng
                       {batch.stages.map((stage, i) => (
                         <div key={i} style={{ borderTop: '1px solid rgba(255, 255, 255, 0.06)', paddingTop: tokens.spacing.xs }}>
                           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                            <span style={{ fontSize: '11px', color: stage.accepted ? tokens.colors.accentPrimary : tokens.colors.error }}>
-                              {stage.agentName} {stage.accepted ? '' : '(rejected)'}
+                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', fontSize: '11px', color: stage.accepted ? tokens.colors.accentPrimary : tokens.colors.error }}>
+                              <strong>Stage {i + 1} · {stage.agentName}</strong>
+                              <span style={{ padding: '2px 6px', borderRadius: '999px', background: stage.accepted ? 'rgba(63,185,120,.12)' : 'rgba(255,94,94,.12)', fontSize: '9px' }}>
+                                {stage.accepted ? 'Accepted' : 'Rejected'}
+                              </span>
+                              <span style={{ color: tokens.colors.textMuted }}>Fidelity {stage.fidelity.toFixed(2)}</span>
                             </span>
                             <Button variant="ghost" size="sm" onClick={() => revertBatch(batch.id, i + 1)}>Revert to here</Button>
                           </div>
-                          <div style={{ fontSize: tokens.typography.sizeXs, color: stage.accepted ? tokens.colors.textSecondary : tokens.colors.textMuted, whiteSpace: 'pre-wrap' }}>
+                          <div style={{ marginTop: '5px', fontSize: tokens.typography.sizeXs, color: stage.accepted ? tokens.colors.textSecondary : tokens.colors.textMuted, whiteSpace: 'pre-wrap' }}>
                             {stage.text}
                           </div>
                           {stage.note && (
-                            <div style={{ fontSize: '10px', color: tokens.colors.textMuted, fontStyle: 'italic' }}>{stage.note}</div>
+                            <div style={{ marginTop: '4px', padding: '6px 8px', borderLeft: '2px solid rgba(255,184,0,.28)', color: tokens.colors.textMuted, fontSize: '10px' }}>
+                              Decision: {stage.note}
+                            </div>
                           )}
                         </div>
                       ))}

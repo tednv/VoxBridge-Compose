@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.0
+## 0.3.0
 
 ### Live refinement
 
@@ -20,6 +20,11 @@
 
 ### Models and providers
 
+- Makes Faster Whisper/CTranslate2 the default speech-recognition path, with
+  CUDA FP16 acceleration, a CPU INT8 fallback, and whisper.cpp/Vulkan retained
+  as the broad-hardware compatibility option.
+- Adds managed Faster Whisper model selection and preparation, including
+  complete-download validation and accurate download, load, and warmup status.
 - Makes Qwen3 4B Instruct 2507 Q4_K_M the recommended embedded refinement model.
 - Adds a managed embedded-model selector with a lighter Qwen2.5 1.5B option and
   an advanced custom-GGUF picker.
@@ -34,8 +39,13 @@
 
 ### Status and workflow
 
-- Restores system-memory reporting and adds live graphics-memory totals where the
-  operating system exposes them.
+- Adds a compact global Start/Stop control, a vertical live microphone meter,
+  backend/model details on status hover, and a confirmed workspace-clear action.
+- Places refinement history and copy actions beside Apply, consolidates the
+  offload controls, and gives both transcript panes the primary working area.
+- Restores system-memory reporting, adds live processor activity, and reports
+  graphics-memory totals and available allocation where the operating system
+  exposes them.
 - Separates speech-recognition and text-refinement memory estimates, reads local
   Ollama's reported model allocation when available, and does not pretend to
   measure a network Ollama server.
@@ -43,6 +53,8 @@
   keyword fallback when model output is unsuitable.
 - Improves progress reporting for download, initialization, preload, recognition,
   refinement, provider switching, and final reconciliation.
+- Guards provider and model switching with generation checks so recording can
+  continue without stale results restoring an obsolete backend.
 
 ### Credits
 

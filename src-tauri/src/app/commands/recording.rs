@@ -2,6 +2,24 @@ use crate::{audio, AppState};
 use tauri::Emitter;
 
 #[tauri::command]
+pub fn get_current_mic_level(state: tauri::State<'_, AppState>) -> f32 {
+    let engine_guard = state.audio_engine.lock().unwrap();
+    let Some(engine) = engine_guard.as_ref() else {
+        return 0.0;
+    };
+    let Ok(samples) = engine.pre_roll_buffer.try_lock() else {
+        return 0.0;
+    };
+
+    samples
+        .iter()
+        .rev()
+        .take((engine.sample_rate as usize / 12).max(1))
+        .fold(0.0_f32, |peak, sample| peak.max(sample.abs()))
+        .min(1.0)
+}
+
+#[tauri::command]
 pub async fn start_recording(
     state: tauri::State<'_, AppState>,
     app_handle: tauri::AppHandle,
