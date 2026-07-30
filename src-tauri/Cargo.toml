@@ -49,7 +49,13 @@ tauri-plugin-autostart = "2"
 libc = "0.2"
 pulsectl-rs = "0.3"
 evdev = "0.13.2"
-ashpd = { version = "0.13.13", features = ["tokio"] }
+# ashpd is pinned to 0.12.x on purpose. 0.13 is a breaking change for this code twice
+# over: the portal modules used here (global_shortcuts, remote_desktop, camera) became
+# opt-in cargo features, and `Session<'a, T>` dropped its lifetime parameter. Nothing in
+# this app needs 0.13, so it stays on the API the Wayland portal code was written
+# against. Do not let an automated dependency bump move this without porting
+# src/platform/linux/wayland/ first.
+ashpd = { version = "0.12.1", features = ["tokio"] }
 zbus = "5.13.1"
 nix = "0.31.1"
 gtk = "0.18"

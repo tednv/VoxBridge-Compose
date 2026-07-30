@@ -11,6 +11,15 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    ignore:
+      # ashpd 0.13 is a breaking change for the Wayland portal code: the portal modules
+      # used here became opt-in cargo features, and Session<'a, T> dropped its lifetime
+      # parameter. An automated bump to it breaks the Linux release build, so hold ashpd
+      # at 0.12.x until src/platform/linux/wayland/ is ported. Patch updates still flow.
+      - dependency-name: ashpd
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
 
   - package-ecosystem: github-actions
     directory: /
